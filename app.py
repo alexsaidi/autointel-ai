@@ -1,42 +1,71 @@
 import streamlit as st
-import requests
 import openai
-import pandas as pd
+import requests
+import json
 
-# Set your OpenAI API key
-openai.api_key = st.secrets["openai_api_key"]
+# Set OpenAI API Key
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-# Apify JSON feed URL
-DATA_URL = "https://api.apify.com/v2/datasets/MBcp5o14QqeeglnaS/items?clean=true&format=json"
+# Set up Streamlit interface
+st.title("VIN Scanner + Flip Analyzer")
+st.markdown("Enter a Vehicle Identification Number (VIN) to pull details and estimate potential profit.")
 
-# Load and process data
-@st.cache_data
-def load_data():
-    response = requests.get(DATA_URL)
-    data = response.json()
-    df = pd.DataFrame(data)
-    return df
+# VIN input box
+vin_input = st.text_input("Enter VIN")
 
-# AI summary
-def generate_summary(cars):
-    car_text = "\n".join([f"- {car.get('title')} | ${car.get('price')}" for car in cars])
-    prompt = f"Summarize the following car listings:\n{car_text}"
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
+if vin_input:
+    # Fetch vehicle details using the VIN (API call to a service)
+    # For example, using an API like VinDecoder or AutoCheck for real-world VIN lookup
+    # This part should be updated with your VIN lookup API of choice.
+    vehicle_details = get_vehicle_details(vin_input)
+    
+    if vehicle_details:
+        st.write(f"### Vehicle Details")
+        st.write(f"**Year:** {vehicle_details['year']}")
+        st.write(f"**Make:** {vehicle_details['make']}")
+        st.write(f"**Model:** {vehicle_details['model']}")
+        st.write(f"**Trim:** {vehicle_details['trim']}")
 
-# Streamlit UI
-st.title("🚗 AutoIntel.AI")
-st.write("AI-powered car tracker and flipping insights")
+        # Calculate Estimated Market Values
+        estimated_values = calculate_estimated_values(vehicle_details)
+        st.write(f"### Estimated Market Values")
+        st.write(estimated_values)
+        
+        # Profit analysis and other info
+        profit_estimate = calculate_profit_estimate(estimated_values)
+        st.write(f"### Profit Estimate")
+        st.write(f"**Potential Profit:** {profit_estimate}")
+        
+    else:
+        st.write("Unable to fetch vehicle details.")
 
-df = load_data()
-st.dataframe(df[['title', 'price', 'vin', 'location']].dropna())
+else:
+    st.write("Enter a VIN above to begin analysis.")
 
-if st.button("🔍 Summarize Listings with AI"):
-    cars = df.to_dict(orient="records")
-    with st.spinner("Thinking..."):
-        summary = generate_summary(cars[:10])
-    st.success("Done!")
-    st.markdown(summary)
+def get_vehicle_details(vin):
+    # Placeholder function - replace this with real VIN lookup API calls
+    # For example, you can use a service like VINDecoder, AutoCheck, etc.
+    try:
+        response = requests.get(f"https://api.example.com/vin/{vin}")
+        vehicle_info = response.json()
+        return vehicle_info
+    except Exception as e:
+        st.error(f"Error fetching vehicle data: {e}")
+        return None
+
+def calculate_estimated_values(vehicle_details):
+    # Placeholder for estimated market values calculation
+    # You might use a combination of market data, auction data, or even AI models
+    return {
+        "Market Value": "$15,000",  # Sample estimate
+        "Auction Price": "$12,000",  # Sample auction price
+        "Suggested Retail": "$18,000"  # Sample suggested retail price
+    }
+
+def calculate_profit_estimate(values):
+    # Placeholder for profit estimate calculation
+    # Simple profit estimate based on market value and auction price
+    market_value = float(values["Market Value"].replace('$', '').replace(',', ''))
+    auction_price = float(values["Auction Price"].replace('$', '').replace(',', ''))
+    return f"${market_value - auction_price:,.2f}"
+
