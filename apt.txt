@@ -20,3 +20,7 @@ libwoff1
 libwayland-client0
 libwayland-cursor0
 libwayland-egl1
+
+# Required to build the lxml wheel
+libxml2-dev
+libxslt1-dev
