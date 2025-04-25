@@ -1,0 +1,22 @@
+# Browser deps for Playwright
+wget
+ca-certificates
+libgbm1
+libasound2
+libatk1.0-0
+libatk-bridge2.0-0
+libdrm2
+libgtk-3-0
+libnspr4
+libnss3
+libxkbcommon0
+libxcomposite1
+libxcursor1
+libxdamage1
+libxrandr2
+libxrender1
+libxtst6
+libwoff1
+libwayland-client0
+libwayland-cursor0
+libwayland-egl1
