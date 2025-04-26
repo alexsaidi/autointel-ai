@@ -1,313 +1,242 @@
-# app.py - AutoIntel.AI Car Intelligence Dashboard
-
 import streamlit as st
-import openai
-import requests
-import pandas as pd
+from typing import List, Dict, Any
 
-# Page configuration
-st.set_page_config(page_title="AutoIntel.AI", layout="wide")
+# -----------------------------------------
+# Note: Using st.session_state for persistence (replaces JSON file storage)
+# -----------------------------------------
 
-def init_state():
+# -----------------------------------------
+# Helper functions (placeholder implementations)
+# -----------------------------------------
+def fetch_listings(query: str) -> List[Dict[str, Any]]:
     """
-    Initialize Streamlit session state variables for listings, previous listings, deal alerts, and other necessary data.
+    Placeholder for actual listing retrieval logic.
+    In practice, replace this with API calls or web scraping to get car listings
+    based on the query. Each listing should have at least a unique 'url', 'title',
+    'price', 'mileage', 'location', and optionally an 'image_url'.
     """
-    if 'listings' not in st.session_state:
-        st.session_state.listings = []
-    if 'previous_listings' not in st.session_state:
-        st.session_state.previous_listings = []
-    if 'deal_alerts' not in st.session_state:
-        st.session_state.deal_alerts = []  # list of criteria dicts
-    if 'ai_history' not in st.session_state:
-        st.session_state.ai_history = []
+    # Example dummy data for demonstration purposes
+    return [
+        {"url": "https://example.com/car1", "title": f"{query} Sedan 2020", "price": 18000, "mileage": 30000, "location": "New York, NY", "image_url": "https://via.placeholder.com/150"},
+        {"url": "https://example.com/car2", "title": f"{query} Coupe 2019", "price": 15000, "mileage": 40000, "location": "Los Angeles, CA", "image_url": "https://via.placeholder.com/150"},
+        {"url": "https://example.com/car3", "title": f"{query} Hatchback 2021", "price": 20000, "mileage": 20000, "location": "Chicago, IL", "image_url": "https://via.placeholder.com/150"},
+    ]
 
-def check_openai_key():
+def display_listings(listings: List[Dict[str, Any]], new_urls: List[str] = None, removed_listings: List[Dict[str, Any]] = None):
     """
-    Check for OpenAI API key in Streamlit secrets or environment.
+    Display listings in Streamlit with optional new/removed indicators.
     """
-    try:
-        if "openai_api_key" in st.secrets:
-            openai.api_key = st.secrets["openai_api_key"]
-        elif "OPENAI_API_KEY" in __import__("os").environ:
-            openai.api_key = __import__("os").environ["OPENAI_API_KEY"]
-        else:
-            openai.api_key = None
-    except Exception:
-        openai.api_key = None
+    # Show removed listings separately
+    if removed_listings:
+        st.markdown("### ❌ Removed Listings")
+        for removed in removed_listings:
+            st.write(f"- {removed['title']} ({removed['location']}) - ${removed['price']:,} - *{removed['mileage']} mi*")
+    # Display current listings, marking new ones
+    for listing in listings:
+        label = "✨ New" if new_urls and listing["url"] in new_urls else ""
+        # Create two columns for image and details
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            # Display image if available
+            if listing.get("image_url"):
+                st.image(listing["image_url"], width=150)
+        with col2:
+            st.markdown(f"**{listing['title']}** {label}")
+            st.write(f"Price: ${listing['price']:,} | Mileage: {listing['mileage']} mi | Location: {listing['location']}")
+            # Add link to original listing
+            st.markdown(f"[View Listing]({listing['url']})")
+    st.write("")  # Add spacing at end
 
-    if not openai.api_key:
-        st.warning("OpenAI API key is not set. AI features will be disabled.")
+# -----------------------------------------
+# Initialize session state for listings persistence
+# -----------------------------------------
+if "search_history" not in st.session_state:
+    # Dictionary to hold previous listings keyed by search query
+    st.session_state.search_history = {}
+if "last_query" not in st.session_state:
+    # Store the last search query for reference
+    st.session_state.last_query = ""
 
-def chatgpt_completion(system_prompt, user_prompt, temperature=0.3, max_tokens=150):
-    """
-    Make a call to OpenAI ChatCompletion API with given system and user prompt.
-    Returns the assistant's response or None if API key missing or error.
-    """
-    if not openai.api_key:
-        st.warning("OpenAI API key not available.")
-        return None
-    try:
-        with st.spinner("AI is thinking..."):
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        st.error(f"OpenAI API error: {e}")
-        return None
-
-def decode_vin(vin):
-    """
-    Decode a VIN using the NHTSA API and return a dictionary of vehicle data.
-    """
-    url = f"https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/{vin}?format=json"
-    try:
-        with st.spinner("Decoding VIN..."):
-            res = requests.get(url, timeout=10)
-        data = res.json()
-        if "Results" in data and data["Results"]:
-            results = data["Results"][0]
-            # Extract common fields
-            return {
-                "Make": results.get("Make", "").title(),
-                "Model": results.get("Model", "").title(),
-                "Year": results.get("ModelYear", ""),
-                "BodyClass": results.get("BodyClass", ""),
-                "VehicleType": results.get("VehicleType", ""),
-                "EngineCylinders": results.get("EngineCylinders", ""),
-                "EngineHP": results.get("EngineHP", ""),
-                "FuelTypePrimary": results.get("FuelTypePrimary", ""),
-            }
-        else:
-            st.error("Invalid response from VIN decoder.")
-            return None
-    except requests.RequestException as e:
-        st.error(f"Error contacting VIN decoding service: {e}")
-        return None
-
-def filter_listings_by_query(listings, query):
-    """
-    Filter listings based on query keywords. 
-    Returns a subset of listings that match query terms in make, model, or body class.
-    """
-    if not query or not listings:
-        return listings
-    query = query.lower()
-    relevant = []
-    for lst in listings:
-        text = f"{lst.get('Make','')} {lst.get('Model','')} {lst.get('BodyClass','')} {lst.get('Year','')} {lst.get('Price','')}"
-        if all(term in text.lower() for term in query.split()):
-            relevant.append(lst)
-    return relevant
-
-def summarize_changes(old_listings, new_listings):
-    """
-    Summarize differences between old and new listings using ChatGPT.
-    """
-    old_ids = {lst.get("VIN", lst.get("Link", "")) for lst in old_listings}
-    new_ids = {lst.get("VIN", lst.get("Link", "")) for lst in new_listings}
-    added_ids = new_ids - old_ids
-    removed_ids = old_ids - new_ids
-
-    added = [lst for lst in new_listings if lst.get("VIN", lst.get("Link", "")) in added_ids]
-    removed = [lst for lst in old_listings if lst.get("VIN", lst.get("Link", "")) in removed_ids]
-
-    changes_text = ""
-    if added:
-        changes_text += "Added listings:\n"
-        for lst in added:
-            changes_text += f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')} at ${lst.get('Price','')}\n"
-    if removed:
-        changes_text += "Removed listings:\n"
-        for lst in removed:
-            changes_text += f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')} that was ${lst.get('Price','')}\n"
-
-    if not changes_text:
-        changes_text = "No changes in listings."
-
-    summary = chatgpt_completion(
-        system_prompt="You summarize changes in car listings in one short paragraph or bullet points.",
-        user_prompt=changes_text,
-        max_tokens=60
-    )
-    if summary:
-        return summary
-    else:
-        return changes_text.strip()
-
-# Initialize state and API keys
-init_state()
-check_openai_key()
-
-# App Title
+# -----------------------------------------
+# Streamlit App Layout and Tabs
+# -----------------------------------------
+st.set_page_config(page_title="AutoIntel.AI Car Intelligence Dashboard", layout="wide")
 st.title("AutoIntel.AI Car Intelligence Dashboard")
 
-# Tabs for different functionalities
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📈 Track Listings", 
-    "💬 AI Assistant", 
-    "🔍 VIN Decoder",
-    "🚨 Deal Alerts",
-    "🛠️ Self-Enhancement"
-])
+# Create tabs for navigation
+tab_names = ["Track Listings", "AI Assistant", "VIN Decoder", "Deal Alerts", "Self-Enhancement"]
+tabs = st.tabs(tab_names)
+tab_track, tab_ai, tab_vin, tab_deals, tab_self = tabs
 
-# 📈 Track Listings Tab
-with tab1:
-    st.header("Track Listings")
-    st.subheader("Add New Listing")
-    with st.form("add_listing_form", clear_on_submit=True):
-        vin_input = st.text_input("VIN (optional)")
-        price_input = st.number_input("Price (USD)", min_value=0, step=100)
-        link_input = st.text_input("Listing URL (optional)")
-        submitted = st.form_submit_button("Add Listing")
-        
-        if submitted:
-            # Save previous state for summary
-            st.session_state.previous_listings = st.session_state.listings.copy()
-            listing = {}
-            if vin_input:
-                vin_data = decode_vin(vin_input.strip())
-                if vin_data:
-                    listing.update(vin_data)
-                    listing["VIN"] = vin_input.strip()
-                else:
-                    st.error("Failed to decode VIN. Listing not added.")
-                    listing = None
+# ------------------------
+# Track Listings Tab
+# ------------------------
+with tab_track:
+    st.header("🔎 Track Listings")
+    st.write("Track new car listings and compare against previously saved results to see what's new or removed.")
+
+    # Input for search query (e.g., make/model or specific search terms)
+    query = st.text_input("Enter search query (e.g., 'Honda Civic 2018')", value=st.session_state.last_query)
+
+    # If the user changes the query, update the session state
+    if query:
+        st.session_state.last_query = query
+
+    # Buttons for initiating search and re-check
+    col_search, col_recheck = st.columns(2)
+    with col_search:
+        if st.button("Search Listings"):
+            # Perform search and compare with any previous results for this query
+            if query:
+                new_listings = fetch_listings(query)
+                # Get previous listings for this query from session (instead of a JSON file)
+                prev_listings = st.session_state.search_history.get(query, [])
+                # Identify new and removed listings by URL
+                prev_urls = {item["url"] for item in prev_listings}
+                new_urls = {item["url"] for item in new_listings}
+                added_urls = new_urls - prev_urls
+                removed_urls = prev_urls - new_urls
+                # Update session with current results (persist for this session)
+                st.session_state.search_history[query] = new_listings
+                # Prepare lists for display
+                added_listings = [item for item in new_listings if item["url"] in added_urls]
+                removed_listings = [item for item in prev_listings if item["url"] in removed_urls]
+                # Display results with indicators
+                display_listings(new_listings, new_urls=added_urls, removed_listings=removed_listings)
+                if added_listings:
+                    st.success(f"✨ Found {len(added_listings)} new listing(s).")
+                if removed_listings:
+                    st.warning(f"❌ {len(removed_listings)} listing(s) have been removed since last search.")
+                if not added_listings and not removed_listings:
+                    st.info("No new or removed listings since last check.")
             else:
-                listing = None
-                st.error("VIN is required to add a listing.")
-            
-            if listing is not None:
-                listing["Price"] = price_input
-                listing["Link"] = link_input
-                st.session_state.listings.append(listing)
-                st.success("Listing added successfully!")
-                # Show summary of changes
-                summary = summarize_changes(st.session_state.previous_listings, st.session_state.listings)
-                st.info(summary)
-                # Display the newly added listing as a card-like element
-                st.subheader("New Listing Added")
-                cols = st.columns(3)
-                with cols[0]:
-                    st.markdown(f"**{listing.get('Year','')} {listing.get('Make','')} {listing.get('Model','')}**")
-                    st.markdown(f"Price: ${listing.get('Price','')}")
-                    if listing.get("Link"):
-                        st.markdown(f"[View Listing]({listing.get('Link')})")
-                    st.write("")  # spacer
+                st.error("Please enter a search query.")
 
-    st.subheader("Filters & View Listings")
-    filter_query = st.text_input("Smart Filter (e.g., 'SUV 25000')")
-    filtered = filter_listings_by_query(st.session_state.listings, filter_query)
-    if filtered:
-        st.write(f"Displaying {len(filtered)} listing(s):")
-        df = pd.DataFrame(filtered)
-        st.dataframe(df)
-    else:
-        st.write("No listings to display. Add a listing above.")
+    with col_recheck:
+        if st.button("Recheck Listings"):
+            # Re-fetch and compare with stored session data
+            if query and query in st.session_state.search_history:
+                updated_listings = fetch_listings(query)
+                prev_listings = st.session_state.search_history[query]
+                prev_urls = {item["url"] for item in prev_listings}
+                new_urls = {item["url"] for item in updated_listings}
+                added_urls = new_urls - prev_urls
+                removed_urls = prev_urls - new_urls
+                # Update session with refreshed results
+                st.session_state.search_history[query] = updated_listings
+                added_listings = [item for item in updated_listings if item["url"] in added_urls]
+                removed_listings = [item for item in prev_listings if item["url"] in removed_urls]
+                display_listings(updated_listings, new_urls=added_urls, removed_listings=removed_listings)
+                if added_listings:
+                    st.success(f"✨ {len(added_listings)} new listing(s) since last check.")
+                if removed_listings:
+                    st.warning(f"❌ {len(removed_listings)} listing(s) have been removed since last check.")
+                if not added_listings and not removed_listings:
+                    st.info("No changes in listings since last check.")
+            else:
+                st.error("No previous search found to recheck. Please perform a search first.")
 
-    if st.session_state.listings:
-        df_download = pd.DataFrame(st.session_state.listings)
-        csv = df_download.to_csv(index=False)
-        st.download_button(
-            label="Download Listings as CSV",
-            data=csv,
-            file_name="listings.csv",
-            mime="text/csv"
-        )
-
-# 💬 AI Assistant Tab
-with tab2:
-    st.header("AI Assistant")
-    st.write("Ask questions about your listings.")
-    query = st.text_input("Your question:")
-    if st.button("Ask AI"):
-        if not query:
-            st.warning("Please enter a question before asking AI.")
-        elif not st.session_state.listings:
-            st.warning("No listings available to analyze.")
+# ------------------------
+# AI Assistant Tab (Placeholder)
+# ------------------------
+with tab_ai:
+    st.header("🧠 AI Assistant")
+    st.write("This AI-powered assistant can answer car-related questions, provide analysis, and more.")
+    # Placeholder for AI chat or query interface
+    user_question = st.text_input("Ask the AI assistant a question...")
+    if st.button("Get Answer"):
+        if user_question:
+            # Placeholder response (replace with actual OpenAI API calls, etc.)
+            st.write(f"🤖 *Assistant says*: Sorry, I am still learning to answer that.")
         else:
-            relevant = filter_listings_by_query(st.session_state.listings, query)
-            if relevant:
-                listing_text = "\n".join(
-                    f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')}, Price: ${lst.get('Price','')}"
-                    for lst in relevant
-                )
-            else:
-                listing_text = "No matching listings found."
-            prompt = f"Here are some car listings:\n{listing_text}\n\nAnswer the question: {query}"
-            answer = chatgpt_completion(
-                system_prompt="You are a helpful assistant that answers questions about car listings given the listing data.",
-                user_prompt=prompt,
-                max_tokens=100
-            )
-            if answer:
-                st.subheader("AI Assistant Response")
-                st.write(answer)
-            else:
-                st.error("Failed to get response from AI.")
+            st.error("Please enter a question for the AI assistant.")
 
-# 🔍 VIN Decoder Tab
-with tab3:
-    st.header("VIN Decoder")
-    vin_input = st.text_input("Enter VIN to decode:")
+# ------------------------
+# VIN Decoder Tab (Placeholder)
+# ------------------------
+with tab_vin:
+    st.header("🔢 VIN Decoder")
+    st.write("Decode vehicle information from a VIN number.")
+    vin = st.text_input("Enter VIN (Vehicle Identification Number)")
     if st.button("Decode VIN"):
-        if not vin_input:
-            st.warning("Please enter a VIN.")
+        if vin:
+            # Placeholder decoded info (replace with real VIN decoding logic)
+            st.write(f"*Decoded Info for {vin}*:")
+            st.write("- Make: ExampleMake")
+            st.write("- Model: ExampleModel")
+            st.write("- Year: 2020")
+            st.write("- Engine: 2.0L 4-cylinder")
+            st.write("- Country of Manufacture: USA")
         else:
-            data = decode_vin(vin_input.strip())
-            if data:
-                st.success("Decoded VIN information:")
-                df = pd.DataFrame(list(data.items()), columns=["Field", "Value"])
-                st.table(df)
+            st.error("Please enter a VIN to decode.")
 
-# 🚨 Deal Alerts Tab
-with tab4:
-    st.header("Deal Alerts")
-    st.write("Set criteria to get notified about matching new listings.")
-    with st.form("deal_alert_form", clear_on_submit=True):
-        alert_make = st.text_input("Make (optional)")
-        alert_model = st.text_input("Model (optional)")
-        alert_max_price = st.number_input("Max Price (0 = any)", min_value=0, step=1000)
-        add_alert = st.form_submit_button("Add Alert")
-        if add_alert:
-            criterion = {"make": alert_make.title(), "model": alert_model.title(), "max_price": alert_max_price}
-            st.session_state.deal_alerts.append(criterion)
-            st.success("Alert criterion added!")
-    if st.session_state.deal_alerts:
-        st.write("### Current Alert Criteria:")
-        for i, crit in enumerate(st.session_state.deal_alerts, start=1):
-            m = crit["make"] or "Any"
-            mo = crit["model"] or "Any"
-            p = crit["max_price"] or "Any"
-            st.write(f"{i}. Make: {m}, Model: {mo}, Max Price: {p}")
-    if st.session_state.listings and st.session_state.deal_alerts:
-        st.write("### Matching Listings for Alerts:")
-        for crit in st.session_state.deal_alerts:
-            matches = [
-                lst for lst in st.session_state.listings
-                if (not crit["make"] or lst.get("Make","") == crit["make"]) and
-                   (not crit["model"] or lst.get("Model","") == crit["model"]) and
-                   (crit["max_price"] == 0 or lst.get("Price", float('inf')) <= crit["max_price"])
-            ]
-            for m in matches:
-                st.warning(f"⚠️ {m.get('Year','')} {m.get('Make','')} {m.get('Model','')} at ${m.get('Price','')} matches your alert criteria!")
+# ------------------------
+# Deal Alerts Tab (Placeholder)
+# ------------------------
+with tab_deals:
+    st.header("🚨 Deal Alerts")
+    st.write("Subscribe to deal alerts for price drops or special offers.")
+    # Placeholder for deal alert functionality
+    alert_email = st.text_input("Enter your email to receive alerts")
+    if st.button("Subscribe"):
+        if alert_email:
+            st.success(f"Subscribed {alert_email} to deal alerts!")
+        else:
+            st.error("Please enter a valid email address.")
 
-# 🛠️ Self-Enhancement Tab
-with tab5:
-    st.header("Self-Enhancement")
+# ------------------------
+# Self-Enhancement Tab
+# ------------------------
+with tab_self:
+    st.header("🛠️ Self-Enhancement")
     st.write("Suggestions to optimize and improve this application:")
     st.markdown("""
-- **Modular Codebase:** Split logic into separate modules (e.g., `data_utils.py`, `api_utils.py`) for maintainability and easier testing.
-- **Type Hinting and Linters:** Add type hints to functions and use a linter (e.g., flake8) to enforce code quality.
-- **Caching:** Use `@st.cache_data` for expensive calls (e.g., VIN decoding) to speed up repeated operations.
-- **Testing:** Implement unit tests (e.g., with `pytest`) to automatically verify functionality during development.
-- **CI/CD:** Set up a CI/CD pipeline (e.g., GitHub Actions) to run tests and automatically deploy updates upon code changes.
-- **Error Monitoring:** Integrate logging (e.g., Sentry) to monitor runtime errors and track issues in production.
-- **Enhanced UI/UX:** Add real car images for listings, use custom CSS for card styling, and improve responsive design for mobile users.
-""")
+    - **Modular Codebase**: Split logic into separate modules (e.g., `data_utils.py`, `api_utils.py`) for maintainability.
+    - **Type Hinting and Linters**: Add type hints and use a linter (e.g., `flake8`) to enforce code quality.
+    - **Caching**: Use `@st.cache_data` for expensive calls (like fetching API data) to speed up repeat operations.
+    - **Testing**: Implement unit tests (e.g., with `pytest`) to automatically verify functionality.
+    - **CI/CD**: Set up a pipeline (GitHub Actions) to run tests and deploy updates on code changes.
+    - **Error Monitoring**: Integrate logging or services like Sentry to track runtime errors in production.
+    - **Enhanced UI/UX**: Show real car images for listings, use custom CSS for card styling, and improve responsive design for mobile users.
+    """)
+# -----------------------------------------
+# Cloud Persistence (Optional)
+# -----------------------------------------
+# To persist data across sessions or users, consider integrating a cloud database or key-value store.
+# 
+# Redis (Key-Value Store):
+#   - Provision a Redis instance (e.g., Redis Labs or AWS ElastiCache).
+#   - Add the Redis URL to streamlit secrets, e.g., REDIS_URL.
+#   - In code: 
+#       import redis  # Requires: pip install redis
+#       redis_client = redis.from_url(st.secrets["REDIS_URL"])
+#       redis_client.set(query, json.dumps(listings))
+#       data = redis_client.get(query)
+#   - This stores listings per query in Redis.
+#
+# Firebase (Realtime Database / Firestore):
+#   - Create a Firebase project and generate service account credentials.
+#   - Add credentials to streamlit secrets (e.g., FIREBASE_CRED).
+#   - Install firebase-admin: pip install firebase-admin
+#   - In code:
+#       import firebase_admin
+#       from firebase_admin import credentials, db
+#       cred = credentials.Certificate(st.secrets["FIREBASE_CRED"])
+#       firebase_admin.initialize_app(cred, {'databaseURL': st.secrets["FIREBASE_DB_URL"]})
+#       ref = db.reference('car_listings')
+#       ref.set({query: listings})
+#   - This uses Firebase to persist listings data.
+#
+# Supabase (Hosted Postgres + Realtime):
+#   - Set up a Supabase project to get URL and anon key.
+#   - Add SUPABASE_URL and SUPABASE_KEY to streamlit secrets.
+#   - Install supabase: pip install supabase
+#   - In code:
+#       from supabase import create_client
+#       supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+#       # Assume a table 'listings' with columns 'query' and 'results'
+#       supabase.table("listings").upsert({"query": query, "results": listings}).execute()
+#       data = supabase.table("listings").select("*").eq("query", query).execute()
+#   - This uses Supabase for persistent storage.
+#
+# The above are optional integrations if you need cross-session or multi-user persistence.
