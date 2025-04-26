@@ -1,225 +1,310 @@
-import streamlit as st
-import requests
-import json
+# app.py
+
+import os
+import logging
 import random
+import requests
+import streamlit as st
 import openai
-from typing import List, Dict, Any
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
 
-# TODO: Add GitHub Actions CI/CD workflow (placeholder)
+# ------------------------------------------------------------
+# 1. CONFIG & SECRETS
+# ------------------------------------------------------------
+st.set_page_config(page_title="AutoIntel.AI Car Dashboard", layout="wide")
+# Load from Streamlit secrets or environment
+OPENAI_API_KEY = st.secrets.get("openai", {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")
+VIN_API_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/"
 
-# Set page configuration and title
-st.set_page_config(page_title="AutoIntel.AI Dashboard", layout="wide")
-st.title("AutoIntel.AI Car Intelligence Dashboard")
+# TODO: Add GitHub Actions workflow to run lint/test and deploy on merge to main
+# TODO: Move all secrets into CI/CD-managed environment
 
-# Initialize session state
-if 'prev_listings' not in st.session_state:
-    st.session_state['prev_listings'] = []
-if 'current_listings' not in st.session_state:
-    st.session_state['current_listings'] = []
+# ------------------------------------------------------------
+# 2. LOGGING SETUP
+# ------------------------------------------------------------
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger("AutoIntel.AI")
 
-# Cache data for VIN decoding to speed up repeated calls
-@st.cache_data(ttl=3600)
-def decode_vin_api(vin: str) -> Dict[str, Any]:
+# ------------------------------------------------------------
+# 3. DATA MODELS
+# ------------------------------------------------------------
+class CarListing(BaseModel):
+    id: int
+    make: str
+    model: str
+    year: int
+    price: float
+    mileage: int
+    location: str
+    vin: Optional[str]
+    image_url: Optional[str]
+    features: List[str] = Field(default_factory=list)
+
+class VINDecodeResult(BaseModel):
+    VIN: str
+    Make: Optional[str]
+    Model: Optional[str]
+    ModelYear: Optional[str]
+    BodyClass: Optional[str]
+    Error: Optional[str]
+
+# ------------------------------------------------------------
+# 4. DATA UTILITIES
+# ------------------------------------------------------------
+@st.cache_data(ttl=600)
+def generate_listings(n: int = 5) -> List[CarListing]:
     """
-    Call NHTSA API to decode a VIN. Returns result dictionary or empty if fail.
+    Simulate fetching n new car listings.
+    """
+    makes_models = {
+        "Toyota": ["Camry", "Corolla"],
+        "Honda": ["Civic", "Accord"],
+        "Ford": ["Mustang", "F-150"],
+        "BMW": ["3 Series", "X5"],
+    }
+    locations = ["NY, NY", "LA, CA", "Chicago, IL", "Houston, TX"]
+    listings = []
+    for i in range(1, n + 1):
+        make = random.choice(list(makes_models.keys()))
+        model = random.choice(makes_models[make])
+        year = random.randint(2012, 2024)
+        price = round(random.uniform(15000, 45000), 2)
+        mileage = random.randint(5000, 120000)
+        location = random.choice(locations)
+        vin = f"{random.randint(10000000000000000, 99999999999999999):017d}"
+        image_url = f"https://source.unsplash.com/featured/?{make},{model},car"
+        listings.append(
+            CarListing(
+                id=i,
+                make=make,
+                model=model,
+                year=year,
+                price=price,
+                mileage=mileage,
+                location=location,
+                vin=vin,
+                image_url=image_url,
+            )
+        )
+    logger.info("Generated %d listings", len(listings))
+    return listings
+
+@st.cache_data(ttl=3600)
+def decode_vin(vin: str) -> VINDecodeResult:
+    """
+    Decode VIN via NHTSA API.
     """
     try:
-        url = f"https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}?format=json"
-        res = requests.get(url, timeout=10)
-        data = res.json()
-        results = data.get("Results", [])
-        if results:
-            return results[0]
-    except Exception:
-        pass
-    return {}
+        resp = requests.get(f"{VIN_API_BASE}{vin}?format=json", timeout=10)
+        resp.raise_for_status()
+        data = resp.json().get("Results", [{}])[0]
+        result = VINDecodeResult(
+            VIN=vin,
+            Make=data.get("Make"),
+            Model=data.get("Model"),
+            ModelYear=data.get("ModelYear"),
+            BodyClass=data.get("BodyClass"),
+            Error=None,
+        )
+        logger.info("VIN %s decoded: %s", vin, result)
+    except Exception as e:
+        logger.error("VIN decode failed: %s", e)
+        result = VINDecodeResult(VIN=vin, Make=None, Model=None, ModelYear=None, BodyClass=None, Error=str(e))
+    return result
 
-# Simulated data: possible car listings (would be fetched from real API in production)
-ALL_LISTINGS = [
-    {"id": 1, "title": "2018 Toyota Camry LE", "url": "https://www.example.com/listing/1", "image": "", "price": "$15,000", "mileage": "40,000 mi", "location": "New York, NY"},
-    {"id": 2, "title": "2019 Honda Accord LX", "url": "https://www.example.com/listing/2", "image": "", "price": "$17,500", "mileage": "30,000 mi", "location": "Los Angeles, CA"},
-    {"id": 3, "title": "2017 Ford F-150 XLT", "url": "https://www.example.com/listing/3", "image": "", "price": "$25,000", "mileage": "50,000 mi", "location": "Houston, TX"},
-    {"id": 4, "title": "2020 BMW 3 Series 330i", "url": "https://www.example.com/listing/4", "image": "", "price": "$28,000", "mileage": "20,000 mi", "location": "Chicago, IL"},
-    {"id": 5, "title": "2016 Chevrolet Malibu LT", "url": "https://www.example.com/listing/5", "image": "", "price": "$12,500", "mileage": "60,000 mi", "location": "Phoenix, AZ"},
-    {"id": 6, "title": "2015 Mercedes-Benz C300", "url": "https://www.example.com/listing/6", "image": "", "price": "$18,000", "mileage": "70,000 mi", "location": "Philadelphia, PA"},
-    {"id": 7, "title": "2018 Toyota Corolla SE", "url": "https://www.example.com/listing/7", "image": "", "price": "$13,000", "mileage": "35,000 mi", "location": "San Antonio, TX"},
-    {"id": 8, "title": "2019 Honda Civic EX", "url": "https://www.example.com/listing/8", "image": "", "price": "$14,500", "mileage": "25,000 mi", "location": "San Diego, CA"},
-    {"id": 9, "title": "2017 Ford Mustang GT", "url": "https://www.example.com/listing/9", "image": "", "price": "$26,000", "mileage": "45,000 mi", "location": "Dallas, TX"},
-    {"id": 10, "title": "2020 Chevrolet Silverado 1500", "url": "https://www.example.com/listing/10", "image": "", "price": "$30,000", "mileage": "15,000 mi", "location": "San Jose, CA"}
-]
+# ------------------------------------------------------------
+# 5. AI UTILITIES
+# ------------------------------------------------------------
+@st.cache_resource
+def get_openai_client():
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI API key is missing.")
+    openai.api_key = OPENAI_API_KEY
+    return openai
 
-def generate_new_listings(prev_listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def simple_keyword_response(text: str) -> Optional[str]:
     """
-    Simulate fetching new listings: remove one random listing, add one new one.
+    Return a canned response if certain keywords found.
     """
-    if not prev_listings:
-        # First fetch: return first 5 items
-        return ALL_LISTINGS[:5]
-    new_listings = prev_listings.copy()
-    # Remove one random listing
-    removed = random.choice(new_listings)
-    new_listings.remove(removed)
-    # Add one new listing not already in the list
-    available = [item for item in ALL_LISTINGS if item not in new_listings]
-    if available:
-        added = random.choice(available)
-        new_listings.append(added)
-    return new_listings
+    text = text.lower()
+    if "price" in text:
+        return "Price varies by region—check our listings tab for current numbers."
+    if "mileage" in text:
+        return "Lower mileage usually commands a higher price. Anything else you need?"
+    if "hello" in text or "hi" in text:
+        return "Hi! How can I assist with your car research today?"
+    return None
 
-# Ensure initial listings on first load
-if not st.session_state['current_listings']:
-    st.session_state['current_listings'] = generate_new_listings([])
+def trim_history(history: List[Dict[str, str]], max_chars: int = 2000) -> List[Dict[str, str]]:
+    """
+    Trim oldest messages until under max_chars.
+    """
+    total = sum(len(m["content"]) for m in history)
+    while total > max_chars and len(history) > 2:
+        removed = history.pop(0)
+        total = sum(len(m["content"]) for m in history)
+        logger.debug("Trimmed message: %s", removed)
+    return history
 
-# Create tabs for different functionalities
+def ask_openai(history: List[Dict[str, str]]) -> str:
+    """
+    Query OpenAI ChatCompletion.
+    """
+    client = get_openai_client()
+    trimmed = trim_history(history)
+    try:
+        resp = client.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=trimmed,
+            max_tokens=150,
+        )
+        answer = resp.choices[0].message.content.strip()
+        logger.info("OpenAI replied: %s", answer)
+        return answer
+    except Exception as e:
+        logger.error("OpenAI error: %s", e)
+        return "Sorry, I couldn't process that right now."
+
+def get_ai_response(user_msg: str, history: List[Dict[str, str]]) -> str:
+    """
+    Decide between keyword response or API call.
+    """
+    if resp := simple_keyword_response(user_msg):
+        history.append({"role": "assistant", "content": resp})
+        return resp
+
+    history.append({"role": "user", "content": user_msg})
+    reply = ask_openai(history)
+    history.append({"role": "assistant", "content": reply})
+    return reply
+
+# ------------------------------------------------------------
+# 6. UI COMPONENTS
+# ------------------------------------------------------------
+def display_metrics(listings: List[CarListing]):
+    """
+    Show average/high/low price metrics.
+    """
+    if not listings:
+        st.warning("No listings to show metrics.")
+        return
+    avg = sum(l.price for l in listings) / len(listings)
+    hi = max(listings, key=lambda l: l.price)
+    lo = min(listings, key=lambda l: l.price)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Avg Price", f"${avg:,.0f}")
+    c2.metric("Highest", f"${hi.price:,.0f}", f"{hi.year} {hi.make}")
+    c3.metric("Lowest", f"${lo.price:,.0f}", f"{lo.year} {lo.make}")
+
+def display_listing(listing: CarListing):
+    """
+    Render a single listing.
+    """
+    cols = st.columns([2, 4, 1, 1, 2])
+    if listing.image_url:
+        cols[0].image(listing.image_url, use_column_width=True)
+    cols[1].markdown(f"**{listing.year} {listing.make} {listing.model}**")
+    cols[2].write(f"${listing.price:,.0f}")
+    cols[3].write(f"{listing.mileage:,} mi")
+    cols[4].write(listing.location)
+
+# ------------------------------------------------------------
+# 7. APP LAYOUT & LOGIC
+# ------------------------------------------------------------
+st.title("🕵️‍♂️ AutoIntel.AI Car Intelligence Dashboard")
 tabs = st.tabs(["Track Listings", "AI Assistant", "VIN Decoder", "Deal Alerts", "Self-Enhancement"])
 
-# --- Track Listings Tab ---
+# --- Track Listings ---
 with tabs[0]:
     st.header("Track Listings")
-    st.write("Fetch the latest car listings and track changes over time.")
-    # Button to refresh listings
-    if st.button("Refresh Listings"):
-        with st.spinner("Updating listings..."):
-            prev = st.session_state['current_listings']
-            new_list = generate_new_listings(prev)
-            st.session_state['prev_listings'] = prev
-            st.session_state['current_listings'] = new_list
+    if "prev" not in st.session_state:
+        st.session_state.prev = []
+    if "current" not in st.session_state:
+        st.session_state.current = generate_listings(5)
 
-    current_listings = st.session_state['current_listings']
-    prev_listings = st.session_state['prev_listings']
+    if st.button("🔄 Refresh"):
+        st.session_state.prev = st.session_state.current
+        st.session_state.current = generate_listings(st.session_state.current.__len__())
 
-    # Determine new vs sold listings
-    new_items = []
-    sold_items = []
-    if prev_listings:
-        prev_ids = {item['id'] for item in prev_listings}
-        curr_ids = {item['id'] for item in current_listings}
-        new_items = [item for item in current_listings if item['id'] not in prev_ids]
-        sold_items = [item for item in prev_listings if item['id'] not in curr_ids]
+    prev_ids = {c.id for c in st.session_state.prev}
+    curr_ids = {c.id for c in st.session_state.current}
+    new = [c for c in st.session_state.current if c.id not in prev_ids]
+    sold = [c for c in st.session_state.prev if c.id not in curr_ids]
 
-    # Display metrics
-    total = len(current_listings)
-    delta = total - len(prev_listings) if prev_listings else 0
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Listings", total, delta)
-    col2.metric("New Listings", len(new_items))
-    col3.metric("Sold Listings", len(sold_items))
+    display_metrics(st.session_state.current)
+    st.subheader("Current Listings")
+    for l in st.session_state.current:
+        display_listing(l)
 
-    # Display current listings
-    if current_listings:
-        st.subheader("Current Listings")
-        for item in current_listings:
-            cols = st.columns([1, 4, 2, 2, 2])
-            # Optionally display image if URL is provided
-            if item.get("image"):
-                cols[0].image(item["image"], width=120)
-            cols[1].markdown(f"**[{item['title']}]({item['url']})**")
-            cols[2].write(item["price"])
-            cols[3].write(item["mileage"])
-            cols[4].write(item["location"])
+    if new:
+        st.subheader("🆕 New Since Last")
+        for l in new:
+            display_listing(l)
 
-    # Display newly listed items
-    if new_items:
-        st.subheader("Newly Listed Since Last Refresh")
-        for item in new_items:
-            cols = st.columns([1, 4, 2, 2, 2])
-            if item.get("image"):
-                cols[0].image(item["image"], width=120)
-            cols[1].markdown(f"**[{item['title']}]({item['url']})**")
-            cols[2].write(item["price"])
-            cols[3].write(item["mileage"])
-            cols[4].write(item["location"])
+    if sold:
+        st.subheader("✅ Removed/Sold")
+        for l in sold:
+            display_listing(l)
 
-    # Display sold/removed items
-    if sold_items:
-        st.subheader("Recently Sold (Removed)")
-        for item in sold_items:
-            cols = st.columns([1, 4, 2, 2, 2])
-            if item.get("image"):
-                cols[0].image(item["image"], width=120)
-            # Show struck-through title for removed items
-            cols[1].markdown(f"~~{item['title']}~~")
-            cols[2].write(item["price"])
-            cols[3].write(item["mileage"])
-            cols[4].write(item["location"])
-
-# --- AI Assistant Tab ---
+# --- AI Assistant ---
 with tabs[1]:
     st.header("AI Assistant")
-    st.write("Ask questions about the listings. Only a small subset of listings is sent to the AI to manage token size.")
-    question = st.text_input("Enter your question for the AI assistant:", "")
-    if st.button("Get AI Response"):
-        if "OPENAI_API_KEY" not in st.secrets:
-            st.error("OpenAI API key not found. Please set OPENAI_API_KEY in Streamlit secrets.")
-        else:
-            openai.api_key = st.secrets["OPENAI_API_KEY"]
-            with st.spinner("Generating response..."):
-                try:
-                    # Filtering listings based on question
-                    keywords = question.lower().split()
-                    relevant = []
-                    for item in st.session_state['current_listings']:
-                        title_lower = item['title'].lower()
-                        if any(kw in title_lower for kw in keywords):
-                            relevant.append(item)
-                    if relevant:
-                        context_list = relevant[:5]
-                    else:
-                        # If no matching listings, use first 5
-                        context_list = st.session_state['current_listings'][:5]
-                    listings_text = "\n".join([json.dumps(item) for item in context_list])
-                    messages = [
-                        {"role": "system", "content": "You are an assistant specializing in car listings."},
-                        {"role": "user", "content": f"Here are some recent car listings:\n{listings_text}\n\nQuestion: {question}"}
-                    ]
-                    response = openai.ChatCompletion.create(model="gpt-4", messages=messages, temperature=0.7)
-                    answer = response.choices[0].message.content
-                    st.write(answer)
-                except openai.error.AuthenticationError:
-                    st.error("Invalid OpenAI API key. Please check your key in Streamlit secrets.")
-                except Exception as e:
-                    st.error(f"An error occurred with the OpenAI API: {e}")
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            {"role": "system", "content": "You are an expert car listings assistant."}
+        ]
+    user_q = st.text_input("Your question:")
+    if st.button("Ask AI") and user_q:
+        answer = get_ai_response(user_q, st.session_state.chat_history)
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-# --- VIN Decoder Tab ---
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "user":
+            st.markdown(f"**You:** {msg['content']}")
+        elif msg["role"] == "assistant":
+            st.markdown(f"**AI:** {msg['content']}")
+
+# --- VIN Decoder ---
 with tabs[2]:
     st.header("VIN Decoder")
-    vin_input = st.text_input("Enter a 17-character VIN:", "")
-    if st.button("Decode VIN"):
-        vin = vin_input.strip()
-        if len(vin) != 17:
-            st.warning("Please enter a valid 17-character VIN.")
-        else:
-            with st.spinner("Decoding VIN..."):
-                info = decode_vin_api(vin)
-                if not info or not info.get("Make"):
-                    st.error("No data found for this VIN or invalid VIN.")
-                else:
-                    # Display key fields in two columns
-                    fields1 = ["Make", "Model", "ModelYear", "Trim", "BodyClass", "VehicleType"]
-                    fields2 = ["EngineCylinders", "DisplacementL", "EngineHP", "FuelTypePrimary", "TransmissionStyle", "PlantCountry"]
-                    colA, colB = st.columns(2)
-                    for field in fields1:
-                        if field in info and info[field]:
-                            colA.write(f"**{field}:** {info[field]}")
-                    for field in fields2:
-                        if field in info and info[field]:
-                            colB.write(f"**{field}:** {info[field]}")
+    vin_in = st.text_input("Enter 17-char VIN:")
+    if st.button("Decode VIN") and vin_in:
+        result = decode_vin(vin_in.strip())
+        st.subheader("Decoded Data")
+        for k, v in result.dict().items():
+            if v is not None:
+                st.write(f"**{k}:** {v}")
 
-# --- Deal Alerts Tab ---
+# --- Deal Alerts ---
 with tabs[3]:
     st.header("Deal Alerts")
-    st.info("Deal alerts functionality is under development. Check back soon!")
+    listings_for_alert = generate_listings(8)
+    choices = [f"{l.year} {l.make} {l.model} — ${l.price:,.0f}" for l in listings_for_alert]
+    sel = st.selectbox("Select Listing:", choices)
+    threshold = st.number_input("Max price you want ($):", min_value=0.0, step=500.0)
+    if st.button("Check Deal"):
+        idx = choices.index(sel)
+        chosen = listings_for_alert[idx]
+        if chosen.price <= threshold:
+            st.success(f"🎉 Deal! {chosen.year} {chosen.make} at ${chosen.price:,.0f}")
+        else:
+            st.info(f"❌ No deal: this one is ${chosen.price:,.0f}")
 
-# --- Self-Enhancement Tab ---
+# --- Self-Enhancement Suggestions ---
 with tabs[4]:
     st.header("Self-Enhancement Suggestions")
-    st.write("Consider these optimizations to improve the app:")
     st.markdown("""
-- **Modular Codebase:** Split logic into separate modules (e.g., `data_utils.py`, `api_utils.py`) for better maintainability.
-- **Type Hinting and Linters:** Add type hints and use a linter (e.g., `flake8`) to enforce code quality.
-- **Caching:** Use `@st.cache_data` for expensive operations (like VIN API calls) to speed up repeated use.
-- **Testing:** Implement unit tests (e.g., with `pytest`) to automatically verify functionality during development.
-- **CI/CD:** Use GitHub Actions to run tests and deploy updates on code changes.
-- **Error Monitoring:** Integrate logging or an error tracking service (e.g., Sentry) to monitor runtime issues in production.
-- **Enhanced UI/UX:** Include real car images for listings, improve styling (CSS/theming), and ensure responsive design for all device sizes.
+- **Monolithic but Structured:** Everything in one file, organized into sections.
+- **Type Checking:** Models via Pydantic for validation and autocompletion.
+- **Caching:** `@st.cache_data` & `@st.cache_resource` for performance.
+- **Logging:** `logging` module to trace operations and errors.
+- **AI Integration:** Keyword shortcuts + OpenAI ChatCompletion.
+- **UI/UX:** Responsive columns, Unsplash images, clear metrics.
+- **Testing TODO:** Add `pytest` tests for each section (data, AI, UI logic).
+- **CI/CD TODO:** Hook up GitHub Actions with `flake8`, `mypy`, `pytest`, and deploy to Streamlit or other host.
+- **Secrets TODO:** Move secrets into Streamlit secrets or environment variables.
 """)
