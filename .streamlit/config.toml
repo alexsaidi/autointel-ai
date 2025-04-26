@@ -1,0 +1,15 @@
+# .streamlit/config.toml
+
+[server]
+# run headless (no local browser)
+headless = true
+
+# cloud will provide $PORT automatically
+port = $PORT
+
+# disable CORS headers (avoids warnings)
+enableCORS = false
+
+[browser]
+# disable the “Gather usage stats” banner
+gatherUsageStats = false
