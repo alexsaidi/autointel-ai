@@ -3,7 +3,7 @@
 """
 AutoIntel.AI Car Intelligence Dashboard
 Refactored with improved decode_vin and review_code methods,
-secure API key handling, and better error handling.
+secure API key handling, and corrected Streamlit inputs.
 """
 
 import os
@@ -130,7 +130,7 @@ class VinDecoder:
             raise ValueError("VIN must be 17 characters long.")
 
         params = {"format": AppConfig.NHTSA_FORMAT}
-        if year:
+        if year and year >= AppConfig.MIN_YEAR:
             params["modelyear"] = year
 
         try:
@@ -248,10 +248,12 @@ def main():
         vin = st.text_input("Enter a 17-character VIN:")
         year = st.number_input(
             "Model Year (optional)",
-            min_value=config.MIN_YEAR,
+            min_value=0,
             max_value=config.MAX_YEAR,
-            value=0
-        ) or None
+            value=0,
+            step=1
+        )
+        year = year if year >= config.MIN_YEAR else None
         if st.button("Decode VIN"):
             try:
                 result = decoder.decode_vin(vin, year)
