@@ -1,340 +1,313 @@
-# ===== Imports =====
+# app.py - AutoIntel.AI Car Intelligence Dashboard
+
 import streamlit as st
-from openai import OpenAI
+import openai
 import requests
-from bs4 import BeautifulSoup
-from pathlib import Path
-import json
+import pandas as pd
 
-# Use Playwright for scraping dynamic sites
-try:
-    from playwright.sync_api import sync_playwright
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
+# Page configuration
+st.set_page_config(page_title="AutoIntel.AI", layout="wide")
 
-# ===== Configuration and Initialization =====
-st.set_page_config(page_title="AutoIntel.AI - Car Listings AI App", layout="wide")
-
-# Title
-st.title("🚗 AutoIntel.AI")
-
-# Load OpenAI API key from Streamlit secrets
-api_key = st.secrets.get("OPENAI_API_KEY", None)
-if not api_key:
-    st.error("OpenAI API key not found. Please add it to .streamlit/secrets.toml")
-    st.stop()
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=api_key)
-
-# Data file path for storing listings
-DATA_FILE = Path("listings.json")
-
-# ===== Helper Functions =====
-
-def scrape_market(make, model, year, zip_code, radius=50):
+def init_state():
     """
-    Scrapes car listings from a sample market website using Playwright and BeautifulSoup.
-    Returns a list of listings (dictionaries) with keys: title, make, model, year, price, mileage, location, url.
+    Initialize Streamlit session state variables for listings, previous listings, deal alerts, and other necessary data.
     """
-    listings = []
-    if not PLAYWRIGHT_AVAILABLE:
-        st.error("Playwright is not installed. Please install playwright to enable market scraping.")
-        return listings
+    if 'listings' not in st.session_state:
+        st.session_state.listings = []
+    if 'previous_listings' not in st.session_state:
+        st.session_state.previous_listings = []
+    if 'deal_alerts' not in st.session_state:
+        st.session_state.deal_alerts = []  # list of criteria dicts
+    if 'ai_history' not in st.session_state:
+        st.session_state.ai_history = []
 
+def check_openai_key():
+    """
+    Check for OpenAI API key in Streamlit secrets or environment.
+    """
     try:
-        # Construct search URL (example for illustrative purposes)
-        search_query = f"{year} {make} {model}"
-        url = f"https://www.autotrader.com/cars-for-sale/used-cars/{zip_code}?makeCodeList={make.upper()}&modelCodeList={model.capitalize()}&year={year}&searchRadius={radius}"
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle")
-            html = page.content()
-            browser.close()
+        if "openai_api_key" in st.secrets:
+            openai.api_key = st.secrets["openai_api_key"]
+        elif "OPENAI_API_KEY" in __import__("os").environ:
+            openai.api_key = __import__("os").environ["OPENAI_API_KEY"]
+        else:
+            openai.api_key = None
+    except Exception:
+        openai.api_key = None
 
-        # Parse HTML with BeautifulSoup
-        soup = BeautifulSoup(html, 'lxml')
-        # Example selectors (these will vary by actual site)
-        listing_cards = soup.select("div.inventory-listing, div.listing")  # adjust as needed
-        for card in listing_cards:
-            try:
-                title_tag = card.select_one("h2")
-                price_tag = card.select_one("span.first-price")
-                mileage_tag = card.select_one("div.item-card-specifications-mileage")
-                location_tag = card.select_one("div.item-card-specifications-location")
-                link_tag = card.select_one("a.listing-link")
+    if not openai.api_key:
+        st.warning("OpenAI API key is not set. AI features will be disabled.")
 
-                title = title_tag.get_text(strip=True) if title_tag else "Unknown"
-                price = price_tag.get_text(strip=True) if price_tag else "N/A"
-                # Clean price (remove $ and commas)
-                price_val = None
-                try:
-                    price_val = int(price.replace("$", "").replace(",", "").split()[0])
-                except:
-                    price_val = None
-
-                mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else None
-                mileage_val = None
-                if mileage_text:
-                    try:
-                        mileage_val = int(mileage_text.replace("mi", "").replace(",", "").strip())
-                    except:
-                        mileage_val = None
-
-                location = location_tag.get_text(strip=True) if location_tag else None
-                link = link_tag['href'] if link_tag and link_tag.has_attr('href') else None
-                if link and not link.startswith("http"):
-                    link = "https://www.autotrader.com" + link
-
-                # Parse year, make, model from title if possible
-                parts = title.split()
-                year_val, make_val, model_val = None, None, None
-                if len(parts) >= 3:
-                    try:
-                        year_val = int(parts[0])
-                        make_val = parts[1]
-                        model_val = parts[2]
-                    except:
-                        pass
-
-                listings.append({
-                    "title": title,
-                    "make": make_val or make,
-                    "model": model_val or model,
-                    "year": year_val or year,
-                    "price": price_val,
-                    "mileage": mileage_val,
-                    "location": location,
-                    "url": link
-                })
-            except Exception:
-                # Skip listing if any parsing error occurs
-                continue
-
+def chatgpt_completion(system_prompt, user_prompt, temperature=0.3, max_tokens=150):
+    """
+    Make a call to OpenAI ChatCompletion API with given system and user prompt.
+    Returns the assistant's response or None if API key missing or error.
+    """
+    if not openai.api_key:
+        st.warning("OpenAI API key not available.")
+        return None
+    try:
+        with st.spinner("AI is thinking..."):
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        st.error(f"Error scraping market data: {e}")
-    return listings
+        st.error(f"OpenAI API error: {e}")
+        return None
 
 def decode_vin(vin):
     """
-    Decodes a VIN using NHTSA's public API.
-    Returns a dictionary of vehicle information.
+    Decode a VIN using the NHTSA API and return a dictionary of vehicle data.
     """
-    vin = vin.strip().upper()
-    if len(vin) != 17:
-        st.error("VIN must be 17 characters long.")
-        return {}
+    url = f"https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/{vin}?format=json"
     try:
-        url = f"https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/{vin}?format=json"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        results = data.get("Results", [])
-        info = {}
-        for item in results:
-            var = item.get("Variable", "")
-            val = item.get("Value", "")
-            if val and var:
-                info[var] = val
-        return info
-    except Exception as e:
-        st.error(f"Error decoding VIN: {e}")
-        return {}
-
-def ask_chat(messages, system_prompt="You are a helpful automotive assistant."):
-    """
-    Sends a list of message dicts (with 'role' and 'content') to OpenAI chat completion.
-    Returns the assistant's reply content.
-    """
-    # Insert system prompt at beginning if not present
-    if not any(msg.get("role") == "system" for msg in messages):
-        messages = [{"role": "system", "content": system_prompt}] + messages
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4",
-            messages=messages
-        )
-        answer = response.choices[0].message.content.strip()
-        return answer
-    except Exception as e:
-        st.error(f"OpenAI API error: {e}")
-        return ""
-
-def estimate_price_with_market(listings, target_year, target_make, target_model, condition):
-    """
-    Estimates price based on scraped market data by filtering similar vehicles.
-    """
-    prices = []
-    for car in listings:
-        if car.get("year") == int(target_year) and car.get("make", "").lower() == target_make.lower() and car.get("model", "").lower() == target_model.lower():
-            if car.get("price"):
-                prices.append(car["price"])
-    if prices:
-        avg_price = sum(prices) / len(prices)
-        # Adjust price based on condition (simple heuristic)
-        if condition.lower() == "excellent":
-            factor = 1.05
-        elif condition.lower() == "good":
-            factor = 1.0
-        elif condition.lower() == "fair":
-            factor = 0.95
+        with st.spinner("Decoding VIN..."):
+            res = requests.get(url, timeout=10)
+        data = res.json()
+        if "Results" in data and data["Results"]:
+            results = data["Results"][0]
+            # Extract common fields
+            return {
+                "Make": results.get("Make", "").title(),
+                "Model": results.get("Model", "").title(),
+                "Year": results.get("ModelYear", ""),
+                "BodyClass": results.get("BodyClass", ""),
+                "VehicleType": results.get("VehicleType", ""),
+                "EngineCylinders": results.get("EngineCylinders", ""),
+                "EngineHP": results.get("EngineHP", ""),
+                "FuelTypePrimary": results.get("FuelTypePrimary", ""),
+            }
         else:
-            factor = 0.9
-        return int(avg_price * factor), len(prices)
-    return None, 0
+            st.error("Invalid response from VIN decoder.")
+            return None
+    except requests.RequestException as e:
+        st.error(f"Error contacting VIN decoding service: {e}")
+        return None
 
-# ===== Streamlit UI: Layout with Tabs =====
-tabs = st.tabs(["Market Scraper", "VIN Decoder", "AI Q&A", "Car Comparison", "Price Estimator"])
-tab_scraper, tab_vin, tab_qa, tab_compare, tab_price = tabs
+def filter_listings_by_query(listings, query):
+    """
+    Filter listings based on query keywords. 
+    Returns a subset of listings that match query terms in make, model, or body class.
+    """
+    if not query or not listings:
+        return listings
+    query = query.lower()
+    relevant = []
+    for lst in listings:
+        text = f"{lst.get('Make','')} {lst.get('Model','')} {lst.get('BodyClass','')} {lst.get('Year','')} {lst.get('Price','')}"
+        if all(term in text.lower() for term in query.split()):
+            relevant.append(lst)
+    return relevant
 
-# --- Market Scraper Tab ---
-with tab_scraper:
-    st.header("🚀 Market Listings Scraper")
-    st.write("Search for car listings by make, model, year, and location.")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        make_input = st.text_input("Make (e.g. Honda)", value="Honda")
-    with col2:
-        model_input = st.text_input("Model (e.g. Civic)", value="Civic")
-    with col3:
-        year_input = st.text_input("Year (e.g. 2018)", value="2018")
-    with col4:
-        zip_input = st.text_input("Zip Code (e.g. 90210)", value="90210")
-    radius_input = st.slider("Search Radius (miles)", min_value=10, max_value=100, value=50, step=5)
-    if st.button("Search Listings"):
-        if not (make_input and model_input and year_input and zip_input):
-            st.error("Please fill in all search fields.")
-        else:
-            with st.spinner("Scraping market data..."):
-                listings = scrape_market(make_input, model_input, year_input, zip_input, radius_input)
-            if listings:
-                # Save to session state and file
-                st.session_state['last_listings'] = listings
-                try:
-                    with open(DATA_FILE, "w") as f:
-                        json.dump(listings, f, indent=2)
-                except Exception as e:
-                    st.warning(f"Could not save listings to file: {e}")
-                st.success(f"Found {len(listings)} listings. Displaying results:")
-                # Display listings in table format
-                for car in listings:
-                    cols = st.columns((3, 1, 1, 2))
-                    cols[0].markdown(f"[{car.get('title','')}]({car.get('url','')})")
-                    cols[1].write(f"${car.get('price','N/A'):,}" if car.get('price') else "N/A")
-                    cols[2].write(f"{car.get('mileage','N/A'):,} mi" if car.get('mileage') else "N/A")
-                    cols[3].write(car.get('location',''))
+def summarize_changes(old_listings, new_listings):
+    """
+    Summarize differences between old and new listings using ChatGPT.
+    """
+    old_ids = {lst.get("VIN", lst.get("Link", "")) for lst in old_listings}
+    new_ids = {lst.get("VIN", lst.get("Link", "")) for lst in new_listings}
+    added_ids = new_ids - old_ids
+    removed_ids = old_ids - new_ids
+
+    added = [lst for lst in new_listings if lst.get("VIN", lst.get("Link", "")) in added_ids]
+    removed = [lst for lst in old_listings if lst.get("VIN", lst.get("Link", "")) in removed_ids]
+
+    changes_text = ""
+    if added:
+        changes_text += "Added listings:\n"
+        for lst in added:
+            changes_text += f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')} at ${lst.get('Price','')}\n"
+    if removed:
+        changes_text += "Removed listings:\n"
+        for lst in removed:
+            changes_text += f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')} that was ${lst.get('Price','')}\n"
+
+    if not changes_text:
+        changes_text = "No changes in listings."
+
+    summary = chatgpt_completion(
+        system_prompt="You summarize changes in car listings in one short paragraph or bullet points.",
+        user_prompt=changes_text,
+        max_tokens=60
+    )
+    if summary:
+        return summary
+    else:
+        return changes_text.strip()
+
+# Initialize state and API keys
+init_state()
+check_openai_key()
+
+# App Title
+st.title("AutoIntel.AI Car Intelligence Dashboard")
+
+# Tabs for different functionalities
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Track Listings", 
+    "💬 AI Assistant", 
+    "🔍 VIN Decoder",
+    "🚨 Deal Alerts",
+    "🛠️ Self-Enhancement"
+])
+
+# 📈 Track Listings Tab
+with tab1:
+    st.header("Track Listings")
+    st.subheader("Add New Listing")
+    with st.form("add_listing_form", clear_on_submit=True):
+        vin_input = st.text_input("VIN (optional)")
+        price_input = st.number_input("Price (USD)", min_value=0, step=100)
+        link_input = st.text_input("Listing URL (optional)")
+        submitted = st.form_submit_button("Add Listing")
+        
+        if submitted:
+            # Save previous state for summary
+            st.session_state.previous_listings = st.session_state.listings.copy()
+            listing = {}
+            if vin_input:
+                vin_data = decode_vin(vin_input.strip())
+                if vin_data:
+                    listing.update(vin_data)
+                    listing["VIN"] = vin_input.strip()
+                else:
+                    st.error("Failed to decode VIN. Listing not added.")
+                    listing = None
             else:
-                st.warning("No listings found or an error occurred during scraping.")
+                listing = None
+                st.error("VIN is required to add a listing.")
+            
+            if listing is not None:
+                listing["Price"] = price_input
+                listing["Link"] = link_input
+                st.session_state.listings.append(listing)
+                st.success("Listing added successfully!")
+                # Show summary of changes
+                summary = summarize_changes(st.session_state.previous_listings, st.session_state.listings)
+                st.info(summary)
+                # Display the newly added listing as a card-like element
+                st.subheader("New Listing Added")
+                cols = st.columns(3)
+                with cols[0]:
+                    st.markdown(f"**{listing.get('Year','')} {listing.get('Make','')} {listing.get('Model','')}**")
+                    st.markdown(f"Price: ${listing.get('Price','')}")
+                    if listing.get("Link"):
+                        st.markdown(f"[View Listing]({listing.get('Link')})")
+                    st.write("")  # spacer
 
-# --- VIN Decoder Tab ---
-with tab_vin:
-    st.header("🔍 VIN Decoder")
-    st.write("Enter a 17-character Vehicle Identification Number to get vehicle details.")
-    vin_input = st.text_input("VIN Number:", max_chars=17)
+    st.subheader("Filters & View Listings")
+    filter_query = st.text_input("Smart Filter (e.g., 'SUV 25000')")
+    filtered = filter_listings_by_query(st.session_state.listings, filter_query)
+    if filtered:
+        st.write(f"Displaying {len(filtered)} listing(s):")
+        df = pd.DataFrame(filtered)
+        st.dataframe(df)
+    else:
+        st.write("No listings to display. Add a listing above.")
+
+    if st.session_state.listings:
+        df_download = pd.DataFrame(st.session_state.listings)
+        csv = df_download.to_csv(index=False)
+        st.download_button(
+            label="Download Listings as CSV",
+            data=csv,
+            file_name="listings.csv",
+            mime="text/csv"
+        )
+
+# 💬 AI Assistant Tab
+with tab2:
+    st.header("AI Assistant")
+    st.write("Ask questions about your listings.")
+    query = st.text_input("Your question:")
+    if st.button("Ask AI"):
+        if not query:
+            st.warning("Please enter a question before asking AI.")
+        elif not st.session_state.listings:
+            st.warning("No listings available to analyze.")
+        else:
+            relevant = filter_listings_by_query(st.session_state.listings, query)
+            if relevant:
+                listing_text = "\n".join(
+                    f"- {lst.get('Year','')} {lst.get('Make','')} {lst.get('Model','')}, Price: ${lst.get('Price','')}"
+                    for lst in relevant
+                )
+            else:
+                listing_text = "No matching listings found."
+            prompt = f"Here are some car listings:\n{listing_text}\n\nAnswer the question: {query}"
+            answer = chatgpt_completion(
+                system_prompt="You are a helpful assistant that answers questions about car listings given the listing data.",
+                user_prompt=prompt,
+                max_tokens=100
+            )
+            if answer:
+                st.subheader("AI Assistant Response")
+                st.write(answer)
+            else:
+                st.error("Failed to get response from AI.")
+
+# 🔍 VIN Decoder Tab
+with tab3:
+    st.header("VIN Decoder")
+    vin_input = st.text_input("Enter VIN to decode:")
     if st.button("Decode VIN"):
         if not vin_input:
-            st.error("Please enter a VIN.")
+            st.warning("Please enter a VIN.")
         else:
-            with st.spinner("Decoding VIN..."):
-                vin_info = decode_vin(vin_input)
-            if vin_info:
-                # Display key details
-                st.subheader("Vehicle Information")
-                info_table = {
-                    "Make": vin_info.get("Make"),
-                    "Model": vin_info.get("Model"),
-                    "Year": vin_info.get("Model Year"),
-                    "Engine": vin_info.get("Engine Model"),
-                    "Manufacturer": vin_info.get("Manufacturer Name"),
-                    "Vehicle Type": vin_info.get("Vehicle Type")
-                }
-                for key, val in info_table.items():
-                    if val:
-                        st.write(f"**{key}:** {val}")
-            else:
-                st.warning("Could not decode VIN or no data available.")
+            data = decode_vin(vin_input.strip())
+            if data:
+                st.success("Decoded VIN information:")
+                df = pd.DataFrame(list(data.items()), columns=["Field", "Value"])
+                st.table(df)
 
-# --- AI Q&A Tab ---
-with tab_qa:
-    st.header("💬 AI Car Advisor (Q&A)")
-    st.write("Ask any question about cars, and our AI will answer.")
-    if 'qa_messages' not in st.session_state:
-        st.session_state['qa_messages'] = [{"role": "system", "content": "You are a knowledgeable automotive assistant."}]
-    # Display chat history
-    for msg in st.session_state['qa_messages']:
-        if msg["role"] in ["user", "assistant"]:
-            st.chat_message(msg["role"]).write(msg["content"])
-    # User input
-    user_prompt = st.chat_input("Ask a question about cars or auto industry:")
-    if user_prompt:
-        st.session_state['qa_messages'].append({"role": "user", "content": user_prompt})
-        with st.spinner("Generating answer..."):
-            reply = ask_chat(st.session_state['qa_messages'], system_prompt="You are a knowledgeable automotive assistant.")
-        if reply:
-            st.session_state['qa_messages'].append({"role": "assistant", "content": reply})
-            st.chat_message("assistant").write(reply)
+# 🚨 Deal Alerts Tab
+with tab4:
+    st.header("Deal Alerts")
+    st.write("Set criteria to get notified about matching new listings.")
+    with st.form("deal_alert_form", clear_on_submit=True):
+        alert_make = st.text_input("Make (optional)")
+        alert_model = st.text_input("Model (optional)")
+        alert_max_price = st.number_input("Max Price (0 = any)", min_value=0, step=1000)
+        add_alert = st.form_submit_button("Add Alert")
+        if add_alert:
+            criterion = {"make": alert_make.title(), "model": alert_model.title(), "max_price": alert_max_price}
+            st.session_state.deal_alerts.append(criterion)
+            st.success("Alert criterion added!")
+    if st.session_state.deal_alerts:
+        st.write("### Current Alert Criteria:")
+        for i, crit in enumerate(st.session_state.deal_alerts, start=1):
+            m = crit["make"] or "Any"
+            mo = crit["model"] or "Any"
+            p = crit["max_price"] or "Any"
+            st.write(f"{i}. Make: {m}, Model: {mo}, Max Price: {p}")
+    if st.session_state.listings and st.session_state.deal_alerts:
+        st.write("### Matching Listings for Alerts:")
+        for crit in st.session_state.deal_alerts:
+            matches = [
+                lst for lst in st.session_state.listings
+                if (not crit["make"] or lst.get("Make","") == crit["make"]) and
+                   (not crit["model"] or lst.get("Model","") == crit["model"]) and
+                   (crit["max_price"] == 0 or lst.get("Price", float('inf')) <= crit["max_price"])
+            ]
+            for m in matches:
+                st.warning(f"⚠️ {m.get('Year','')} {m.get('Make','')} {m.get('Model','')} at ${m.get('Price','')} matches your alert criteria!")
 
-# --- Car Comparison Tab ---
-with tab_compare:
-    st.header("⚖️ Car Comparison")
-    st.write("Compare two vehicles and get an AI-powered summary of their differences.")
-    comp_col1, comp_col2 = st.columns(2)
-    with comp_col1:
-        car1 = st.text_input("First Car (Year Make Model trim):", key="car1_input")
-    with comp_col2:
-        car2 = st.text_input("Second Car (Year Make Model trim):", key="car2_input")
-    if st.button("Compare Cars"):
-        if not car1 or not car2:
-            st.error("Please enter both car descriptions.")
-        else:
-            prompt = f"Compare the following two cars: Car 1: {car1}. Car 2: {car2}. Discuss their strengths, weaknesses, and which might be a better choice overall."
-            with st.spinner("Analyzing cars..."):
-                response = openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": "You are an expert car analyst."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                comparison = response.choices[0].message.content.strip()
-            st.write(comparison)
-
-# --- Price Estimator Tab ---
-with tab_price:
-    st.header("💰 Price Estimator")
-    st.write("Estimate the fair market price of a car based on its specs and current listings.")
-    price_col1, price_col2 = st.columns(2)
-    with price_col1:
-        est_year = st.text_input("Year:", key="year_est")
-        est_make = st.text_input("Make:", key="make_est")
-        est_model = st.text_input("Model:", key="model_est")
-    with price_col2:
-        est_mileage = st.number_input("Mileage:", min_value=0, step=1000, key="mileage_est")
-        est_condition = st.selectbox("Condition:", ["Excellent", "Good", "Fair", "Poor"], key="cond_est")
-        est_location = st.text_input("Location (City, State):", key="loc_est", value="New York, NY")
-    if st.button("Estimate Price"):
-        if not (est_year and est_make and est_model):
-            st.error("Please provide year, make, and model.")
-        else:
-            est_year_int = int(est_year) if est_year.isdigit() else None
-            # Try to use scraped data if available
-            listings_data = st.session_state.get('last_listings', [])
-            price = None
-            count = 0
-            if listings_data:
-                price, count = estimate_price_with_market(listings_data, est_year, est_make, est_model, est_condition)
-            if price:
-                st.success(f"Estimated price based on {count} similar listings: ${price:,}")
-            else:
-                # Fallback to AI estimation
-                prompt = f"Estimate the current market price of a {est_year} {est_make} {est_model} with {est_mileage} miles in {est_condition.lower()} condition in {est_location}."
-                with st.spinner("Calculating estimation..."):
-                    response = openai_client.chat.completions.create(
-                        model="gpt-4",
-                        messages=[
-                            {"role": "system", "content": "You are a knowledgeable car pricing assistant."},
-                            {"role": "user", "content": prompt}
-                        ]
-                    )
-                    ai_estimate = response.choices[0].message.content.strip()
-                st.write(ai_estimate)
+# 🛠️ Self-Enhancement Tab
+with tab5:
+    st.header("Self-Enhancement")
+    st.write("Suggestions to optimize and improve this application:")
+    st.markdown("""
+- **Modular Codebase:** Split logic into separate modules (e.g., `data_utils.py`, `api_utils.py`) for maintainability and easier testing.
+- **Type Hinting and Linters:** Add type hints to functions and use a linter (e.g., flake8) to enforce code quality.
+- **Caching:** Use `@st.cache_data` for expensive calls (e.g., VIN decoding) to speed up repeated operations.
+- **Testing:** Implement unit tests (e.g., with `pytest`) to automatically verify functionality during development.
+- **CI/CD:** Set up a CI/CD pipeline (e.g., GitHub Actions) to run tests and automatically deploy updates upon code changes.
+- **Error Monitoring:** Integrate logging (e.g., Sentry) to monitor runtime errors and track issues in production.
+- **Enhanced UI/UX:** Add real car images for listings, use custom CSS for card styling, and improve responsive design for mobile users.
+""")
