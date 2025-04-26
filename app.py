@@ -2,7 +2,8 @@
 
 """
 AutoIntel.AI Car Intelligence Dashboard
-Refactored to avoid caching instance methods and fix hashing errors.
+Refactored with improved decode_vin and review_code methods,
+secure API key handling, correct Streamlit caching, and working AI Assistant.
 """
 
 import os
@@ -39,7 +40,6 @@ class AppConfig:
     }
     LOCATIONS: List[str] = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"]
 
-
 # ------------------------------------------------------------
 # 2. SECRET MANAGEMENT
 # ------------------------------------------------------------
@@ -56,7 +56,6 @@ def get_openai_api_key() -> str:
         st.stop()
     return key
 
-
 # ------------------------------------------------------------
 # 3. LOGGING SETUP
 # ------------------------------------------------------------
@@ -65,7 +64,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger("AutoIntelAI")
-
 
 # ------------------------------------------------------------
 # 4. DATA MODELS
@@ -81,9 +79,8 @@ class CarListing(BaseModel):
     location: str
     features: List[str] = Field(default_factory=list)
 
-
 # ------------------------------------------------------------
-# 5. LISTING GENERATOR (no caching on methods)
+# 5. LISTING GENERATOR
 # ------------------------------------------------------------
 class ListingGenerator:
     """Generates mock car listings."""
@@ -115,9 +112,8 @@ class ListingGenerator:
             raise ValueError("Count must be a positive integer.")
         return [self.generate_listing(i) for i in range(1, count + 1)]
 
-
 # ------------------------------------------------------------
-# 6. VIN DECODER (module-level caching)
+# 6. VIN DECODER
 # ------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
@@ -148,7 +144,6 @@ def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
     data = resp.json()
     logger.info("VIN decoded successfully.")
     return data
-
 
 # ------------------------------------------------------------
 # 7. AI REVIEWER
@@ -191,9 +186,32 @@ class AIReviewer:
             logger.exception("OpenAI API call failed.")
             raise RuntimeError("Error during code review. Please check your API key and network.")
 
+# ------------------------------------------------------------
+# 8. AI ASSISTANT (for listings)
+# ------------------------------------------------------------
+def get_ai_assistant_response(prompt: str) -> str:
+    """Get GPT-4 response for general listing questions."""
+    if not prompt or not prompt.strip():
+        return "Please ask a question about the listings."
+    # simple keyword fallback
+    low = prompt.lower()
+    if "price" in low:
+        return "Listing prices update frequently—check Track Listings for current numbers."
+    if "mileage" in low:
+        return "Mileage affects value: lower mileage usually commands a higher price."
+    # otherwise call GPT-4
+    try:
+        resp = openai.ChatCompletion.create(
+            model=AppConfig.OPENAI_MODEL,
+            messages=[{"role":"user","content":prompt}]
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("AI Assistant call failed.")
+        return "Sorry, I can't reach the AI service right now."
 
 # ------------------------------------------------------------
-# 8. STREAMLIT UI & MAIN
+# 9. STREAMLIT UI & MAIN
 # ------------------------------------------------------------
 def main():
     st.title("🕵️ AutoIntel.AI Car Intelligence Dashboard")
@@ -231,16 +249,13 @@ def main():
             except ValueError as e:
                 st.error(str(e))
 
-    # --- AI Assistant (basic) ---
+    # --- AI Assistant ---
     with tabs[1]:
         st.header("AI Assistant")
         query = st.text_input("Ask about listings:")
         if st.button("Ask AI"):
-            try:
-                answer = reviewer.review_code(f"# Context question: {query}")
-                st.write(answer)
-            except Exception as e:
-                st.error(str(e))
+            answer = get_ai_assistant_response(query)
+            st.write(answer)
 
     # --- VIN Decoder ---
     with tabs[2]:
