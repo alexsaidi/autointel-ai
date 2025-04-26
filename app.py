@@ -5,8 +5,8 @@ import logging
 import random
 import requests
 import streamlit as st
-import openai
-from typing import List, Optional, Dict, Any
+from openai import OpenAI
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 
 # ------------------------------------------------------------
@@ -19,8 +19,8 @@ OPENAI_API_KEY = (
 )
 VIN_API_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/"
 
-# TODO: Add GitHub Actions workflow to run lint/tests and deploy on merge
-# TODO: Move all secrets into CI/CD-managed environment
+# TODO: Add GitHub Actions to lint/test/deploy
+# TODO: Move secrets into CI/CD-managed env
 
 # ------------------------------------------------------------
 # 2. LOGGING
@@ -76,7 +76,7 @@ def generate_listings(n: int = 5) -> List[CarListing]:
         price = round(random.uniform(15000, 45000), 2)
         mileage = random.randint(5000, 120000)
         location = random.choice(locations)
-        vin = f"{random.randint(10**16, 10**17-1):017d}"
+        vin = f"{random.randint(10**16, 10**17 - 1):017d}"
         image_url = f"https://source.unsplash.com/featured/?{make},{model},car"
         listings.append(
             CarListing(
@@ -112,19 +112,25 @@ def decode_vin(vin: str) -> VINDecodeResult:
         logger.info("Decoded VIN %s: %s", vin, result)
     except Exception as e:
         logger.error("VIN decode error for %s: %s", vin, e)
-        result = VINDecodeResult(VIN=vin, Make=None, Model=None, ModelYear=None, BodyClass=None, Error=str(e))
+        result = VINDecodeResult(
+            VIN=vin,
+            Make=None,
+            Model=None,
+            ModelYear=None,
+            BodyClass=None,
+            Error=str(e),
+        )
     return result
 
 
 # ------------------------------------------------------------
-# 5. AI UTILITIES
+# 5. AI UTILITIES (GPT-4)
 # ------------------------------------------------------------
 @st.cache_resource
-def get_openai_client():
+def get_openai_client() -> OpenAI:
     if not OPENAI_API_KEY:
         raise RuntimeError("OpenAI API key is missing.")
-    openai.api_key = OPENAI_API_KEY
-    return openai
+    return OpenAI(api_key=OPENAI_API_KEY)
 
 
 def simple_keyword_response(text: str) -> Optional[str]:
@@ -133,7 +139,7 @@ def simple_keyword_response(text: str) -> Optional[str]:
         return "Prices fluctuate—check the Listings tab for up-to-date figures."
     if "mileage" in t:
         return "Mileage impacts value. Lower mileage typically means higher price."
-    if "hello" in t or "hi" in t:
+    if any(g in t for g in ("hello", "hi")):
         return "Hi there! How can I help you with car listings?"
     return None
 
@@ -151,7 +157,7 @@ def ask_openai(history: List[Dict[str, str]]) -> str:
     client = get_openai_client()
     trimmed = trim_history(history)
     try:
-        resp = client.ChatCompletion.create(
+        resp = client.chat.completions.create(
             model="gpt-4",  # or "gpt-4-turbo"
             messages=trimmed,
             max_tokens=250,
@@ -166,9 +172,9 @@ def ask_openai(history: List[Dict[str, str]]) -> str:
 
 
 def get_ai_response(user_msg: str, history: List[Dict[str, str]]) -> str:
-    if resp := simple_keyword_response(user_msg):
-        history.append({"role": "assistant", "content": resp})
-        return resp
+    if kr := simple_keyword_response(user_msg):
+        history.append({"role": "assistant", "content": kr})
+        return kr
     history.append({"role": "user", "content": user_msg})
     reply = ask_openai(history)
     history.append({"role": "assistant", "content": reply})
@@ -205,7 +211,9 @@ def display_listing(listing: CarListing):
 # 7. APP LAYOUT & LOGIC
 # ------------------------------------------------------------
 st.title("🕵️ AutoIntel.AI Car Intelligence Dashboard")
-tabs = st.tabs(["Track Listings", "AI Assistant", "VIN Decoder", "Deal Alerts", "Self-Enhancement"])
+tabs = st.tabs(
+    ["Track Listings", "AI Assistant", "VIN Decoder", "Deal Alerts", "Self-Enhancement"]
+)
 
 # --- Track Listings ---
 with tabs[0]:
@@ -217,7 +225,9 @@ with tabs[0]:
 
     if st.button("🔄 Refresh Listings"):
         st.session_state.prev_listings = st.session_state.current_listings
-        st.session_state.current_listings = generate_listings(len(st.session_state.current_listings))
+        st.session_state.current_listings = generate_listings(
+            len(st.session_state.current_listings)
+        )
 
     prev_ids = {c.id for c in st.session_state.prev_listings}
     curr_ids = {c.id for c in st.session_state.current_listings}
@@ -247,37 +257,35 @@ with tabs[1]:
         ]
     user_q = st.text_input("Enter your question:")
     if st.button("Ask AI") and user_q:
-        reply = get_ai_response(user_q, st.session_state.chat_history)
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        ans = get_ai_response(user_q, st.session_state.chat_history)
+        st.session_state.chat_history.append({"role": "assistant", "content": ans})
 
     for msg in st.session_state.chat_history:
-        if msg["role"] == "user":
-            st.markdown(f"**You:** {msg['content']}")
-        elif msg["role"] == "assistant":
-            st.markdown(f"**AI:** {msg['content']}")
+        tag = "**You:**" if msg["role"] == "user" else "**AI:**"
+        st.markdown(f"{tag} {msg['content']}")
 
 # --- VIN Decoder ---
 with tabs[2]:
     st.header("VIN Decoder")
     vin_in = st.text_input("Enter a 17-character VIN:")
     if st.button("Decode VIN") and vin_in.strip():
-        result = decode_vin(vin_in.strip())
+        res = decode_vin(vin_in.strip())
         st.subheader("Decoded VIN Information")
-        for key, val in result.dict().items():
-            if val is not None:
-                st.write(f"**{key}:** {val}")
+        for k, v in res.dict().items():
+            if v is not None:
+                st.write(f"**{k}:** {v}")
 
 # --- Deal Alerts ---
 with tabs[3]:
     st.header("Deal Alerts")
     sample = generate_listings(8)
-    choices = [f"{l.year} {l.make} {l.model} — ${l.price:,.0f}" for l in sample]
-    sel = st.selectbox("Choose a listing:", choices)
-    threshold = st.number_input("Your max price ($):", min_value=0.0, step=500.0)
+    opts = [f"{l.year} {l.make} {l.model} — ${l.price:,.0f}" for l in sample]
+    sel = st.selectbox("Choose a listing:", opts)
+    thresh = st.number_input("Your max price ($):", min_value=0.0, step=500.0)
     if st.button("Check Deal"):
-        idx = choices.index(sel)
+        idx = opts.index(sel)
         chosen = sample[idx]
-        if chosen.price <= threshold:
+        if chosen.price <= thresh:
             st.success(f"🎉 Deal! {chosen.year} {chosen.make} at ${chosen.price:,.0f}")
         else:
             st.info(f"❌ No deal: it's ${chosen.price:,.0f}")
@@ -306,7 +314,7 @@ with tabs[4]:
                         "4. (Optional) Improved code snippets or diff-style recommendations.\n\n"
                         f"```python\n{code}\n```"
                     )
-                    response = client.ChatCompletion.create(
+                    resp = client.chat.completions.create(
                         model="gpt-4",
                         messages=[
                             {"role": "system", "content": "You are a helpful assistant for code review."},
@@ -314,9 +322,9 @@ with tabs[4]:
                         ],
                         temperature=0.5,
                     )
-                    review = response.choices[0].message.content.strip()
+                    review = resp.choices[0].message.content.strip()
 
-                # Parse first line for scores
+                # Extract scores from first line if present
                 lines = review.splitlines()
                 review_body = review
                 if lines and "Maintainability" in lines[0] and "Performance" in lines[0]:
@@ -335,7 +343,7 @@ with tabs[4]:
                 st.subheader("Suggestions & Details")
                 st.markdown(review_body)
 
-                # Display diff/code blocks if present
+                # Render any diff or code snippets
                 if "```diff" in review_body:
                     diff = review_body.split("```diff", 1)[1].rsplit("```", 1)[0]
                     st.subheader("Code Diff Suggestions")
@@ -346,6 +354,5 @@ with tabs[4]:
                         code_snip = snip.rsplit("```", 1)[0]
                         st.subheader(f"Code Snippet {i+1}")
                         st.code(code_snip, language="python")
-
             except Exception as e:
                 st.error(f"Error during code review: {e}")
