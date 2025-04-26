@@ -1,9 +1,8 @@
-```python
 # app.py
 
 """
 AutoIntel.AI Car Intelligence Dashboard
-Refactored to ensure AI Assistant uses its own GPT calls and avoid code-review errors in that tab.
+Refactored to ensure AI Assistant functions and no markdown fences.
 """
 
 import os
@@ -16,9 +15,7 @@ import streamlit as st
 import openai
 from pydantic import BaseModel, Field
 
-# ------------------------------------------------------------
 # 1. CONFIGURATION & CONSTANTS
-# ------------------------------------------------------------
 class AppConfig:
     MIN_YEAR: int = 1980
     MAX_YEAR: int = 2025
@@ -39,28 +36,19 @@ class AppConfig:
     }
     LOCATIONS: List[str] = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"]
 
-# ------------------------------------------------------------
 # 2. SECRET MANAGEMENT
-# ------------------------------------------------------------
 def get_openai_api_key() -> str:
-    key = (
-        st.secrets.get("openai", {}).get("api_key", "")
-        or os.getenv("OPENAI_API_KEY", "")
-    )
+    key = st.secrets.get("openai", {}).get("api_key", "") or os.getenv("OPENAI_API_KEY", "")
     if not key:
-        st.error("❌ OpenAI API key missing. Set OPENAI_API_KEY in secrets or env.")
+        st.error("❌ OpenAI API key missing. Set it in Streamlit secrets or as environment variable.")
         st.stop()
     return key
 
-# ------------------------------------------------------------
-# 3. LOGGING SETUP
-# ------------------------------------------------------------
+# 3. LOGGING
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------
-# 4. DATA MODELS
-# ------------------------------------------------------------
+# 4. DATA MODEL
 class CarListing(BaseModel):
     id: int
     make: str
@@ -71,9 +59,7 @@ class CarListing(BaseModel):
     location: str
     features: List[str] = Field(default_factory=list)
 
-# ------------------------------------------------------------
 # 5. LISTING GENERATOR
-# ------------------------------------------------------------
 class ListingGenerator:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -92,9 +78,7 @@ class ListingGenerator:
             raise ValueError("Count must be positive.")
         return [self.generate_listing(i) for i in range(1, count + 1)]
 
-# ------------------------------------------------------------
 # 6. VIN DECODER
-# ------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
     vin = vin.strip() if isinstance(vin, str) else ""
@@ -107,9 +91,7 @@ def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
     resp.raise_for_status()
     return resp.json()
 
-# ------------------------------------------------------------
 # 7. AI REVIEWER
-# ------------------------------------------------------------
 class AIReviewer:
     def __init__(self, model: str, api_key: str):
         openai.api_key = api_key
@@ -118,29 +100,26 @@ class AIReviewer:
     def review_code(self, code: str) -> str:
         if not code.strip():
             raise ValueError("No code provided.")
-        response = openai.ChatCompletion.create(
+        resp = openai.ChatCompletion.create(
             model=self.model,
-            messages=[{"role":"user","content":f"Review this code:```\n{code}\n```"}]
+            messages=[{"role":"user","content":f"Review this code:\n```python\n{code}\n```"}]
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
 
-# ------------------------------------------------------------
 # 8. AI ASSISTANT
-# ------------------------------------------------------------
 def get_ai_assistant_response(prompt: str) -> str:
     if not prompt.strip():
         return "Please ask a question."
     low = prompt.lower()
     if "price" in low:
-        return "Prices update often—see Track Listings."  
+        return "Prices update often—see Track Listings."
     if "mileage" in low:
-        return "Lower mileage often means higher value."  
+        return "Lower mileage often means higher value."
     resp = openai.ChatCompletion.create(model=AppConfig.OPENAI_MODEL, messages=[{"role":"user","content":prompt}])
     return resp.choices[0].message.content.strip()
 
-# ------------------------------------------------------------
 # 9. UI & MAIN
-# ------------------------------------------------------------
+
 def main():
     st.title("AutoIntel.AI Car Intelligence Dashboard")
     config = AppConfig()
@@ -151,7 +130,7 @@ def main():
     tabs = st.tabs(["Track Listings","AI Assistant","VIN Decoder","Deal Alerts","Self-Enhancement"])
 
     with tabs[0]:
-        count = st.number_input("Listings count",1,50,config.LISTINGS_DEFAULT_COUNT)
+        count = st.number_input("Listings count", 1, 50, config.LISTINGS_DEFAULT_COUNT)
         if st.button("Generate Listings"):
             st.write(generator.generate_listings(count))
 
@@ -160,21 +139,23 @@ def main():
         if st.button("Ask AI", key="ask"): st.write(get_ai_assistant_response(q))
 
     with tabs[2]:
-        vin=st.text_input("VIN:")
-        y=st.number_input("Year opt",0,config.MAX_YEAR,0)
-        y=None if y<config.MIN_YEAR else y
-        if st.button("Decode VIN"): st.json(decode_vin(vin,y))
+        vin = st.text_input("VIN:")
+        y = st.number_input("Year (opt)", 0, config.MAX_YEAR, 0)
+        y = None if y < config.MIN_YEAR else y
+        if st.button("Decode VIN"): st.json(decode_vin(vin, y))
 
     with tabs[3]:
-        sample=generator.generate_listings(5)
-        opts=[f"{c.year} {c.make} {c.model} ${c.price}" for c in sample]
-        sel=st.selectbox("Pick",opts)
-        th=st.number_input("Max $",0.0,100000.0,0.0)
-        if st.button("Chk"): st.success("Deal" if sample[opts.index(sel)].price<=th else "No deal")
+        sample = generator.generate_listings(5)
+        opts = [f"{c.year} {c.make} {c.model} ${c.price}" for c in sample]
+        sel = st.selectbox("Pick", opts)
+        th = st.number_input("Max $", 0.0, 100000.0, 0.0)
+        if st.button("Chk"): st.success("Deal" if sample[opts.index(sel)].price <= th else "No deal")
 
     with tabs[4]:
-        code=st.file_uploader("Upload",type=["py"]); text=code.read().decode() if code else st.text_area("Paste",height=200)
-        if st.button("Analyze Code"): st.write(reviewer.review_code(text))
+        code_file = st.file_uploader("Upload Python file", type=["py"] )
+        code_text = code_file.read().decode() if code_file else st.text_area("Paste code", height=200)
+        if st.button("Analyze Code"): st.write(reviewer.review_code(code_text))
 
-if __name__=="__main__": main()
-```
+if __name__=="__main__":
+    main()
+
