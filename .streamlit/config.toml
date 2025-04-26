@@ -1,15 +1,49 @@
 # .streamlit/config.toml
 
+################
+# SERVER
+################
 [server]
-# run headless (no local browser)
+# Run headlessly (no browser) — your host will provide $PORT
 headless = true
-
-# cloud will provide $PORT automatically
-port = $PORT
-
-# disable CORS headers (avoids warnings)
+# Don’t hard-code a port; let the env assign $PORT
+# port = 8501
+# Disable CORS if embedding in an iframe or behind a proxy
 enableCORS = false
+# Compress WebSocket traffic
+enableWebsocketCompression = true
 
+################
+# BROWSER
+################
 [browser]
-# disable the “Gather usage stats” banner
+# If you need to bind to a specific interface (e.g. Docker), uncomment:
+# serverAddress = "0.0.0.0"
+# Opt-out of usage statistics
 gatherUsageStats = false
+
+################
+# GLOBAL
+################
+[global]
+# Log level: debug, info, warn, error
+logLevel = "info"
+# Don’t send CSP violation reports
+sendCSPReports = false
+
+################
+# RUNNER
+################
+[runner]
+# Disable Python “magic” (e.g. reuse of stale variables)
+magicEnabled = false
+
+################
+# THEME
+################
+[theme]
+primaryColor = "#1E90FF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#000000"
+font = "sans serif"
