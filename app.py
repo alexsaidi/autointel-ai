@@ -2,8 +2,7 @@
 
 """
 AutoIntel.AI Car Intelligence Dashboard
-Refactored with improved decode_vin and review_code methods,
-secure API key handling, correct Streamlit caching, and fixed indentation.
+Refactored to avoid caching instance methods and fix hashing errors.
 """
 
 import os
@@ -84,7 +83,7 @@ class CarListing(BaseModel):
 
 
 # ------------------------------------------------------------
-# 5. LISTING GENERATOR
+# 5. LISTING GENERATOR (no caching on methods)
 # ------------------------------------------------------------
 class ListingGenerator:
     """Generates mock car listings."""
@@ -93,7 +92,7 @@ class ListingGenerator:
         self.config = config
 
     def generate_listing(self, index: int) -> CarListing:
-        """Generate a single random CarListing (no caching here)."""
+        """Generate a single random CarListing."""
         make = random.choice(list(self.config.MAKES_MODELS.keys()))
         model = random.choice(self.config.MAKES_MODELS[make])
         year = random.randint(self.config.MIN_YEAR, self.config.MAX_YEAR)
@@ -110,47 +109,45 @@ class ListingGenerator:
             location=location
         )
 
-    @st.cache_data(ttl=600)
     def generate_listings(self, count: int) -> List[CarListing]:
-        """Generate and cache a list of random CarListings."""
+        """Generate a list of random CarListings."""
         if count < 1:
             raise ValueError("Count must be a positive integer.")
         return [self.generate_listing(i) for i in range(1, count + 1)]
 
 
 # ------------------------------------------------------------
-# 6. VIN DECODER
+# 6. VIN DECODER (module-level caching)
 # ------------------------------------------------------------
-class VinDecoder:
-    """Decodes VIN numbers via the NHTSA API."""
+@st.cache_data(ttl=3600)
+def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
+    """
+    Decode a VIN using NHTSA API with proper URL params.
+    Caching at module level to avoid hashing self.
+    """
+    vin = vin.strip() if isinstance(vin, str) else ""
+    if len(vin) != 17:
+        logger.error("VIN must be a 17-character string.")
+        raise ValueError("VIN must be 17 characters long.")
 
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
-        """Decode a VIN using NHTSA, with parameterized requests."""
-        vin = vin.strip() if isinstance(vin, str) else ""
-        if len(vin) != 17:
-            logger.error("VIN must be a 17-character string.")
-            raise ValueError("VIN must be 17 characters long.")
+    params = {"format": AppConfig.NHTSA_FORMAT}
+    if year and year >= AppConfig.MIN_YEAR:
+        params["modelyear"] = year
 
-        params = {"format": AppConfig.NHTSA_FORMAT}
-        if year and year >= AppConfig.MIN_YEAR:
-            params["modelyear"] = year
+    try:
+        resp = requests.get(
+            AppConfig.NHTSA_DECODE_URL + vin,
+            params=params,
+            timeout=10
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        logger.exception("Failed to connect to NHTSA API.")
+        raise
 
-        try:
-            resp = requests.get(
-                AppConfig.NHTSA_DECODE_URL + vin,
-                params=params,
-                timeout=10
-            )
-            resp.raise_for_status()
-        except requests.RequestException:
-            logger.exception("Failed to connect to NHTSA API.")
-            raise
-
-        data = resp.json()
-        logger.info("VIN decoded successfully.")
-        return data
+    data = resp.json()
+    logger.info("VIN decoded successfully.")
+    return data
 
 
 # ------------------------------------------------------------
@@ -207,7 +204,6 @@ def main():
 
     # Instantiate components
     generator = ListingGenerator(config)
-    decoder = VinDecoder()
     reviewer = AIReviewer(model=config.OPENAI_MODEL, api_key=api_key)
 
     tabs = st.tabs([
@@ -260,8 +256,8 @@ def main():
         year = year if year >= config.MIN_YEAR else None
         if st.button("Decode VIN"):
             try:
-                result = decoder.decode_vin(vin, year)
-                st.json(result)
+                data = decode_vin(vin, year)
+                st.json(data)
             except Exception as e:
                 st.error(str(e))
 
