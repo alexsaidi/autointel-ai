@@ -14,7 +14,6 @@ from typing import List, Dict, Optional
 import requests
 import streamlit as st
 import openai
-from openai.error import OpenAIError
 from pydantic import BaseModel, Field
 
 # ------------------------------------------------------------
@@ -135,9 +134,13 @@ class VinDecoder:
             params["modelyear"] = year
 
         try:
-            resp = requests.get(AppConfig.NHTSA_DECODE_URL + vin, params=params, timeout=10)
+            resp = requests.get(
+                AppConfig.NHTSA_DECODE_URL + vin,
+                params=params,
+                timeout=10
+            )
             resp.raise_for_status()
-        except requests.RequestException as e:
+        except requests.RequestException:
             logger.exception("Failed to connect to NHTSA API.")
             raise
 
@@ -166,28 +169,26 @@ class AIReviewer:
         try:
             response = openai.ChatCompletion.create(
                 model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            "You are an expert Python code reviewer. "
-                            "Analyze the following code and provide:\n"
-                            "1. Maintainability score (1-10) and Performance score (1-10).\n"
-                            "2. Bullet-point suggestions for improvement.\n"
-                            "3. Specific comments on caching, modularization, type hints, error handling, logging, and testing.\n"
-                            "4. (Optional) Code snippets or diff-style fixes.\n\n"
-                            f"```python\n{code}\n```"
-                        )
-                    }
-                ]
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "You are an expert Python code reviewer. "
+                        "Analyze the following code and provide:\n"
+                        "1. Maintainability score (1-10) and Performance score (1-10).\n"
+                        "2. Bullet-point suggestions for improvement.\n"
+                        "3. Specific comments on caching, modularization, type hints, error handling, logging, and testing.\n"
+                        "4. (Optional) Code snippets or diff-style fixes.\n\n"
+                        f"```python\n{code}\n```"
+                    )
+                }]
             )
             review = response.choices[0].message.content.strip()
             logger.info("Received review from GPT-4.")
             return review
 
-        except OpenAIError as e:
+        except Exception:
             logger.exception("OpenAI API call failed.")
-            raise RuntimeError("Error during code review: " + str(e)) from e
+            raise RuntimeError("Error during code review. Please check your API key and network.")
 
 
 # ------------------------------------------------------------
@@ -206,16 +207,22 @@ def main():
     reviewer = AIReviewer(model=config.OPENAI_MODEL, api_key=api_key)
 
     tabs = st.tabs([
-        "Track Listings", "AI Assistant",
-        "VIN Decoder", "Deal Alerts", "Self-Enhancement"
+        "Track Listings",
+        "AI Assistant",
+        "VIN Decoder",
+        "Deal Alerts",
+        "Self-Enhancement"
     ])
 
     # --- Track Listings ---
     with tabs[0]:
         st.header("Track Listings")
         count = st.number_input(
-            "Number of listings", min_value=1, max_value=50,
-            value=config.LISTINGS_DEFAULT_COUNT, step=1
+            "Number of listings",
+            min_value=1,
+            max_value=50,
+            value=config.LISTINGS_DEFAULT_COUNT,
+            step=1
         )
         if st.button("Generate Listings"):
             try:
@@ -224,21 +231,26 @@ def main():
             except ValueError as e:
                 st.error(str(e))
 
-    # --- AI Assistant (keyword fallback only) ---
+    # --- AI Assistant (basic) ---
     with tabs[1]:
         st.header("AI Assistant")
         query = st.text_input("Ask about listings:")
         if st.button("Ask AI"):
-            answer = reviewer.review_code(f"# Example context: {query}")
-            st.write(answer)
+            try:
+                answer = reviewer.review_code(f"# Context question: {query}")
+                st.write(answer)
+            except Exception as e:
+                st.error(str(e))
 
     # --- VIN Decoder ---
     with tabs[2]:
         st.header("VIN Decoder")
-        vin = st.text_input("Enter a 17-char VIN:")
+        vin = st.text_input("Enter a 17-character VIN:")
         year = st.number_input(
-            "Model Year (optional)", min_value=config.MIN_YEAR,
-            max_value=config.MAX_YEAR, value=0
+            "Model Year (optional)",
+            min_value=config.MIN_YEAR,
+            max_value=config.MAX_YEAR,
+            value=0
         ) or None
         if st.button("Decode VIN"):
             try:
@@ -247,16 +259,19 @@ def main():
             except Exception as e:
                 st.error(str(e))
 
-    # --- Deal Alerts (mock) ---
+    # --- Deal Alerts ---
     with tabs[3]:
         st.header("Deal Alerts")
         sample = generator.generate_listings(5)
-        opts = [f"{c.year} {c.make} {c.model} — ${c.price:,.0f}" for c in sample]
+        opts = [
+            f"{c.year} {c.make} {c.model} — ${c.price:,.0f}"
+            for c in sample
+        ]
         choice = st.selectbox("Select listing:", opts)
-        thresh = st.number_input("Max price ($):", min_value=0.0, step=500.0)
+        threshold = st.number_input("Max price ($):", min_value=0.0, step=500.0)
         if st.button("Check Deal"):
             sel = sample[opts.index(choice)]
-            if sel.price <= thresh:
+            if sel.price <= threshold:
                 st.success(f"Deal! {sel.make} at ${sel.price:,.0f}")
             else:
                 st.info(f"No deal: ${sel.price:,.0f}")
@@ -265,14 +280,16 @@ def main():
     with tabs[4]:
         st.header("AI-Powered Code Review")
         uploaded = st.file_uploader("Upload a Python file", type=["py"])
-        code_text = uploaded.read().decode("utf-8") if uploaded else st.text_area(
-            "Or paste Python code here", height=250
+        code_text = (
+            uploaded.read().decode("utf-8")
+            if uploaded
+            else st.text_area("Or paste your Python code here", height=250)
         )
 
         if st.button("Analyze Code"):
             try:
                 review = reviewer.review_code(code_text)
-                # Parse and display scores + suggestions
+                # Parse first line for scores
                 lines = review.splitlines()
                 body = review
                 if lines and "Maintainability" in lines[0] and "Performance" in lines[0]:
@@ -283,9 +300,10 @@ def main():
                     c1.metric("Maintainability", m_score)
                     c2.metric("Performance", p_score)
                     body = "\n".join(lines[1:]).strip()
+
                 st.markdown(body)
 
-                # Show diff/code blocks if present
+                # Show diff or code blocks if present
                 if "```diff" in body:
                     diff = body.split("```diff")[1].rsplit("```", 1)[0]
                     st.code(diff, language="diff")
