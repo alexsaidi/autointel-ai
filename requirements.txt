@@ -1,23 +1,13 @@
-# Core app
-streamlit==1.25.0
-
-# Browser automation
-playwright==1.36.0
-
-# HTML parsing
-beautifulsoup4==4.12.2
-lxml==4.9.2
-
-# Ensure greenlet installs cleanly on Python 3.12
-greenlet>=3.0.2
-
-# HTTP & API clients
-requests==2.31.0
-openai==0.27.8
-
-# Data handling
-pandas==2.0.3
-numpy==1.25.0
-
-# Scheduling tasks
-apscheduler==3.10.4
+streamlit==1.44.0   # Core app framework (Streamlit UI)
+playwright==1.50.0  # Browser automation for scraping
+beautifulsoup4==4.12.3  # HTML parsing library (BeautifulSoup)
+lxml==5.4.0         # Fast XML/HTML parser (wheels support Python 3.12)  
+requests==2.32.3    # HTTP client for web requests
+openai==1.76.0      # OpenAI API client library
+pandas==2.2.3       # Data analysis and DataFrame library
+numpy==1.26.4       # Numerical computing library (required by pandas)
+apscheduler==3.11.0 # Job scheduling (cron-like tasks)
+greenlet==3.2.1     # Concurrency support (compatible with Playwright)
+tqdm==4.66.5        # Progress bar utility (optional)
+python-dotenv==1.0.1  # Environment variable loader (optional)
+tenacity==9.1.2     # Robust retry logic for calls (optional)
