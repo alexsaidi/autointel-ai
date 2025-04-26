@@ -2,7 +2,7 @@
 
 """
 AutoIntel.AI Car Intelligence Dashboard
-Refactored to ensure AI Assistant functions and no markdown fences.
+Refactored to avoid caching instance methods and to use OpenAI v1 API interface.
 """
 
 import os
@@ -40,7 +40,7 @@ class AppConfig:
 def get_openai_api_key() -> str:
     key = st.secrets.get("openai", {}).get("api_key", "") or os.getenv("OPENAI_API_KEY", "")
     if not key:
-        st.error("❌ OpenAI API key missing. Set it in Streamlit secrets or as environment variable.")
+        st.error("❌ OpenAI API key missing. Set it in Streamlit secrets or env.")
         st.stop()
     return key
 
@@ -59,7 +59,7 @@ class CarListing(BaseModel):
     location: str
     features: List[str] = Field(default_factory=list)
 
-# 5. LISTING GENERATOR
+# 5. LISTING GENERATOR (no caching on methods)
 class ListingGenerator:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -78,7 +78,7 @@ class ListingGenerator:
             raise ValueError("Count must be positive.")
         return [self.generate_listing(i) for i in range(1, count + 1)]
 
-# 6. VIN DECODER
+# 6. VIN DECODER (module-level caching)
 @st.cache_data(ttl=3600)
 def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
     vin = vin.strip() if isinstance(vin, str) else ""
@@ -91,7 +91,7 @@ def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
     resp.raise_for_status()
     return resp.json()
 
-# 7. AI REVIEWER
+# 7. AI REVIEWER (migrated to v1 API)
 class AIReviewer:
     def __init__(self, model: str, api_key: str):
         openai.api_key = api_key
@@ -100,13 +100,13 @@ class AIReviewer:
     def review_code(self, code: str) -> str:
         if not code.strip():
             raise ValueError("No code provided.")
-        resp = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model=self.model,
-            messages=[{"role":"user","content":f"Review this code:\n```python\n{code}\n```"}]
+            messages=[{"role": "user", "content": f"Review this code:\n```python\n{code}\n```"}]
         )
-        return resp.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip()
 
-# 8. AI ASSISTANT
+# 8. AI ASSISTANT (v1 API)
 def get_ai_assistant_response(prompt: str) -> str:
     if not prompt.strip():
         return "Please ask a question."
@@ -115,8 +115,11 @@ def get_ai_assistant_response(prompt: str) -> str:
         return "Prices update often—see Track Listings."
     if "mileage" in low:
         return "Lower mileage often means higher value."
-    resp = openai.ChatCompletion.create(model=AppConfig.OPENAI_MODEL, messages=[{"role":"user","content":prompt}])
-    return resp.choices[0].message.content.strip()
+    response = openai.chat.completions.create(
+        model=AppConfig.OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content.strip()
 
 # 9. UI & MAIN
 
@@ -136,26 +139,29 @@ def main():
 
     with tabs[1]:
         q = st.text_input("Ask:")
-        if st.button("Ask AI", key="ask"): st.write(get_ai_assistant_response(q))
+        if st.button("Ask AI", key="ask"): 
+            st.write(get_ai_assistant_response(q))
 
     with tabs[2]:
         vin = st.text_input("VIN:")
         y = st.number_input("Year (opt)", 0, config.MAX_YEAR, 0)
         y = None if y < config.MIN_YEAR else y
-        if st.button("Decode VIN"): st.json(decode_vin(vin, y))
+        if st.button("Decode VIN"): 
+            st.json(decode_vin(vin, y))
 
     with tabs[3]:
         sample = generator.generate_listings(5)
         opts = [f"{c.year} {c.make} {c.model} ${c.price}" for c in sample]
         sel = st.selectbox("Pick", opts)
         th = st.number_input("Max $", 0.0, 100000.0, 0.0)
-        if st.button("Chk"): st.success("Deal" if sample[opts.index(sel)].price <= th else "No deal")
+        if st.button("Chk"): 
+            st.success("Deal" if sample[opts.index(sel)].price <= th else "No deal")
 
     with tabs[4]:
         code_file = st.file_uploader("Upload Python file", type=["py"] )
         code_text = code_file.read().decode() if code_file else st.text_area("Paste code", height=200)
-        if st.button("Analyze Code"): st.write(reviewer.review_code(code_text))
+        if st.button("Analyze Code"): 
+            st.write(reviewer.review_code(code_text))
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
-
