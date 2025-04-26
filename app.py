@@ -3,7 +3,7 @@
 """
 AutoIntel.AI Car Intelligence Dashboard
 Refactored with improved decode_vin and review_code methods,
-secure API key handling, and correct Streamlit caching.
+secure API key handling, correct Streamlit caching, and fixed indentation.
 """
 
 import os
@@ -324,3 +324,4 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
