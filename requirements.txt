@@ -1,9 +1,23 @@
+# Core app
 streamlit==1.25.0
+
+# Browser automation
 playwright==1.36.0
+
+# HTML parsing
 beautifulsoup4==4.12.2
 lxml==4.9.2
+
+# Ensure greenlet installs cleanly on Python 3.12
+greenlet>=3.0.2
+
+# HTTP & API clients
 requests==2.31.0
 openai==0.27.8
+
+# Data handling
 pandas==2.0.3
 numpy==1.25.0
+
+# Scheduling tasks
 apscheduler==3.10.4
