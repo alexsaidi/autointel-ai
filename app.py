@@ -1,5 +1,3 @@
-# app.py
-
 import os
 import sys
 import logging
@@ -56,7 +54,6 @@ logger = logging.getLogger("AutoIntelAI")
 # 4. DATA MODELS
 # ------------------------------------------------------------
 class CarListing(BaseModel):
-    """Pydantic model for a single car listing."""
     id: int
     make: str
     model: str
@@ -69,7 +66,6 @@ class CarListing(BaseModel):
     features: List[str] = Field(default_factory=list)
 
 class VINDecodeResult(BaseModel):
-    """Pydantic model for VIN decoding results."""
     VIN: str
     Make: Optional[str]
     Model: Optional[str]
@@ -82,7 +78,6 @@ class VINDecodeResult(BaseModel):
 # ------------------------------------------------------------
 @st.cache_data(ttl=600)
 def generate_random_car(i: int) -> CarListing:
-    """Generate a single random CarListing."""
     make = random.choice(list(MAKES_MODELS.keys()))
     model = random.choice(MAKES_MODELS[make])
     year = random.randint(MIN_YEAR, MAX_YEAR)
@@ -91,37 +86,21 @@ def generate_random_car(i: int) -> CarListing:
     location = random.choice(LOCATIONS)
     vin = f"{random.randint(10**16, 10**17 - 1):017d}"
     image_url = f"https://source.unsplash.com/featured/?{make},{model},car"
-    listing = CarListing(
-        id=i,
-        make=make,
-        model=model,
-        year=year,
-        price=price,
-        mileage=mileage,
-        location=location,
-        vin=vin,
-        image_url=image_url,
+    return CarListing(
+        id=i, make=make, model=model, year=year,
+        price=price, mileage=mileage, location=location,
+        vin=vin, image_url=image_url
     )
-    logger.debug("Generated car: %s", listing)
-    return listing
 
 def generate_listings(n: int = LISTINGS_DEFAULT_COUNT) -> List[CarListing]:
-    """
-    Generate n random car listings.
-    Splits logic into helper function for testability.
-    """
     return [generate_random_car(i) for i in range(1, n + 1)]
 
 @st.cache_data(ttl=3600)
 def decode_vin(vin: str) -> VINDecodeResult:
-    """
-    Decode a vehicle VIN via NHTSA API.
-    Raises on HTTP errors.
-    """
     resp = requests.get(f"{VIN_API_BASE}{vin}?format=json", timeout=10)
     resp.raise_for_status()
     data = resp.json().get("Results", [{}])[0]
-    result = VINDecodeResult(
+    return VINDecodeResult(
         VIN=vin,
         Make=data.get("Make"),
         Model=data.get("Model"),
@@ -129,19 +108,15 @@ def decode_vin(vin: str) -> VINDecodeResult:
         BodyClass=data.get("BodyClass"),
         Error=None,
     )
-    logger.info("Decoded VIN %s: %s", vin, result)
-    return result
 
 # ------------------------------------------------------------
 # 6. AI UTILITIES (GPT-4)
 # ------------------------------------------------------------
 @st.cache_resource
 def get_openai_client() -> OpenAI:
-    """Instantiate and return the OpenAI client."""
     return OpenAI(api_key=OPENAI_API_KEY)
 
 def simple_keyword_response(text: str) -> Optional[str]:
-    """Return a canned reply for basic keywords."""
     t = text.lower()
     if "price" in t:
         return "Prices fluctuate—see the Listings tab for up-to-date figures."
@@ -152,10 +127,6 @@ def simple_keyword_response(text: str) -> Optional[str]:
     return None
 
 def ask_openai(history: List[Dict[str, str]]) -> str:
-    """
-    Send conversation history to GPT-4 and return the assistant's reply.
-    Assumes history is already trimmed if needed.
-    """
     client = get_openai_client()
     response = client.chat.completions.create(
         model="gpt-4",
@@ -163,15 +134,9 @@ def ask_openai(history: List[Dict[str, str]]) -> str:
         max_tokens=250,
         temperature=0.5,
     )
-    reply = response.choices[0].message.content.strip()
-    logger.info("OpenAI response: %s", reply)
-    return reply
+    return response.choices[0].message.content.strip()
 
 def get_ai_response(user_msg: str, history: List[Dict[str, str]]) -> str:
-    """
-    Get AI assistant response: uses simple keywords or falls back to GPT-4.
-    Appends both user and assistant messages to history.
-    """
     if kr := simple_keyword_response(user_msg):
         history.append({"role": "assistant", "content": kr})
         return kr
@@ -184,7 +149,6 @@ def get_ai_response(user_msg: str, history: List[Dict[str, str]]) -> str:
 # 7. UI HELPERS
 # ------------------------------------------------------------
 def display_metrics(listings: List[CarListing]):
-    """Show average, highest, and lowest price metrics."""
     if not listings:
         st.warning("No listings to display metrics.")
         return
@@ -197,7 +161,6 @@ def display_metrics(listings: List[CarListing]):
     c3.metric("Lowest Price", f"${lo.price:,.0f}", f"{lo.year} {lo.make}")
 
 def display_listing(listing: CarListing):
-    """Render a single CarListing as a Streamlit row with image."""
     cols = st.columns([2, 4, 1, 1, 2])
     if listing.image_url:
         cols[0].image(listing.image_url, use_column_width=True)
@@ -209,13 +172,15 @@ def display_listing(listing: CarListing):
 # ------------------------------------------------------------
 # 8. MAIN APP LAYOUT & LOGIC
 # ------------------------------------------------------------
+
 st.title("🕵️ AutoIntel.AI Car Intelligence Dashboard")
 tabs = st.tabs([
     "Track Listings",
     "AI Assistant",
     "VIN Decoder",
     "Deal Alerts",
-    "Self-Enhancement"
+    "Self-Enhancement",
+    "Live OCR Sourcing"
 ])
 
 # --- Track Listings Tab ---
@@ -260,7 +225,6 @@ with tabs[1]:
     query = st.text_input("Enter your question:")
     if st.button("Ask AI") and query:
         answer = get_ai_response(query, st.session_state.chat_history)
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
     for msg in st.session_state.chat_history:
         tag = "**You:**" if msg["role"] == "user" else "**AI:**"
@@ -332,7 +296,6 @@ with tabs[4]:
                     )
                     review = resp.choices[0].message.content.strip()
 
-                # Parse scores
                 lines = review.splitlines()
                 review_body = review
                 if lines and "Maintainability" in lines[0] and "Performance" in lines[0]:
@@ -351,7 +314,6 @@ with tabs[4]:
                 st.subheader("Suggestions & Details")
                 st.markdown(review_body)
 
-                # Show diffs or code snippets
                 if "```diff" in review_body:
                     diff = review_body.split("```diff", 1)[1].rsplit("```", 1)[0]
                     st.subheader("Code Diff Suggestions")
@@ -365,3 +327,116 @@ with tabs[4]:
 
             except Exception as e:
                 st.error(f"Error during code review: {e}")
+
+# --- Live OCR Sourcing Tab ---
+with tabs[5]:
+    st.header("Live OCR Sourcing Agent")
+    st.write(
+        "Download and run the desktop OCR agent alongside your browser. "
+        "It will capture the listing area, extract VIN/price/mileage in real-time, "
+        "send to the AI backend, and overlay deal scores on your screen."
+    )
+    ocr_code = '''# ocr_agent.py
+import time
+import re
+import threading
+import requests
+from PIL import ImageGrab
+import pytesseract
+import tkinter as tk
+from tkinter import ttk
+
+# Configuration
+CAPTURE_REGION = (0, 100, 1920, 1080)
+OCR_LANG = 'eng'
+SCORING_API_URL = 'https://your-streamlit-app.com/api/score_listing'
+POLL_INTERVAL = 5
+
+VIN_PATTERN = r"\b([A-HJ-NPR-Z0-9]{17})\b"
+PRICE_PATTERN = r"\$\s*([0-9,]+(?:\.[0-9]{1,2})?)"
+MILEAGE_PATTERN = r"([0-9,]+)\s*mi"
+
+class Overlay(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.overrideredirect(True)
+        self.attributes('-topmost', True)
+        self.attributes('-alpha', 0.8)
+        self.label = ttk.Label(self, text='', background='black', foreground='white', font=('Arial', 12))
+        self.label.pack(padx=10, pady=5)
+
+    def show_message(self, msg: str, duration=5):
+        self.label.config(text=msg)
+        self.update_idletasks()
+        self.after(duration * 1000, self.clear)
+
+    def clear(self):
+        self.label.config(text='')
+
+overlay = Overlay()
+seen = set()
+
+def capture_screen(region=None):
+    return ImageGrab.grab(bbox=region)
+
+def ocr_image(img):
+    return pytesseract.image_to_string(img, lang=OCR_LANG)
+
+def parse_listings(text):
+    vins = re.findall(VIN_PATTERN, text)
+    prices = re.findall(PRICE_PATTERN, text)
+    miles = re.findall(MILEAGE_PATTERN, text)
+    listings = []
+    for i, vin in enumerate(vins):
+        price = float(prices[i].replace(',', '')) if i < len(prices) else None
+        mileage = int(miles[i].replace(',', '')) if i < len(miles) else None
+        listings.append({'vin': vin, 'price': price, 'mileage': mileage})
+    return listings
+
+def score_listing(listing):
+    try:
+        resp = requests.post(SCORING_API_URL, json=listing, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {'error': str(e)}
+
+def monitor_loop():
+    while True:
+        img = capture_screen(CAPTURE_REGION)
+        text = ocr_image(img)
+        listings = parse_listings(text)
+        for lst in listings:
+            key = (lst['vin'], lst.get('price'), lst.get('mileage'))
+            if key not in seen:
+                seen.add(key)
+                result = score_listing(lst)
+                if 'score' in result:
+                    msg = f"VIN {lst['vin']} → Score {result['score']} Profit ${result.get('estimated_profit',0)}"
+                else:
+                    msg = f"Scoring error: {result.get('error')}"
+                overlay.show_message(msg)
+        time.sleep(POLL_INTERVAL)
+
+threading.Thread(target=monitor_loop, daemon=True).start()
+overlay.mainloop()'''
+    st.download_button(
+        label="Download OCR Agent (ocr_agent.py)",
+        data=ocr_code,
+        file_name="ocr_agent.py",
+        mime="text/x-python"
+    )
+    st.markdown("**Instructions:**")
+    st.markdown("""
+1. Install dependencies:
+   ```bash
+   pip install pytesseract pillow opencv-python requests
+   sudo apt install tesseract-ocr
+   ```
+2. Adjust `CAPTURE_REGION` in `ocr_agent.py` to match your browser.
+3. Run:
+   ```bash
+   python ocr_agent.py
+   ```
+4. Browse auction sites; overlay will show live deal scores.
+""")
