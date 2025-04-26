@@ -1,49 +1,19 @@
 # .streamlit/config.toml
 
-################
-# SERVER
-################
 [server]
-# Run headlessly (no browser) — your host will provide $PORT
+# Run in headless mode when deployed
 headless = true
-# Don’t hard-code a port; let the env assign $PORT
-# port = 8501
-# Disable CORS if embedding in an iframe or behind a proxy
+
+# Disable CORS (useful if embedding in an iframe or behind a proxy)
 enableCORS = false
-# Compress WebSocket traffic
-enableWebsocketCompression = true
 
-################
-# BROWSER
-################
-[browser]
-# If you need to bind to a specific interface (e.g. Docker), uncomment:
-# serverAddress = "0.0.0.0"
-# Opt-out of usage statistics
-gatherUsageStats = false
+# Don’t specify a port here; let your hosting env assign $PORT automatically
+# (port = 8501)
 
-################
-# GLOBAL
-################
-[global]
-# Log level: debug, info, warn, error
-logLevel = "info"
-# Don’t send CSP violation reports
-sendCSPReports = false
-
-################
-# RUNNER
-################
-[runner]
-# Disable Python “magic” (e.g. reuse of stale variables)
-magicEnabled = false
-
-################
-# THEME
-################
 [theme]
-primaryColor = "#1E90FF"
-backgroundColor = "#FFFFFF"
+# Customize your app’s look (optional)
+primaryColor             = "#1E90FF"
+backgroundColor          = "#FFFFFF"
 secondaryBackgroundColor = "#F0F2F6"
-textColor = "#000000"
-font = "sans serif"
+textColor                = "#000000"
+font                     = "sans serif"
