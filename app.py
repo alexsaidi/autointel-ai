@@ -1,65 +1,29 @@
 # app.py
 
-"""
-AutoIntel.AI Car Intelligence Dashboard
-Refactored with improved decode_vin and review_code methods,
-secure API key handling, and better error handling.
-"""
-
 import os
 import logging
 import random
-from typing import List, Dict, Optional
-
 import requests
 import streamlit as st
-import openai
+from openai import OpenAI
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 
 # ------------------------------------------------------------
-# 1. CONFIGURATION & CONSTANTS
+# 1. CONFIG & SECRETS
 # ------------------------------------------------------------
-class AppConfig:
-    """Configuration values and constants."""
-    MIN_YEAR: int = 1980
-    MAX_YEAR: int = 2025
-    MIN_PRICE: int = 1000
-    MAX_PRICE: int = 100_000
-    LISTINGS_DEFAULT_COUNT: int = 5
+st.set_page_config(page_title="AutoIntel.AI Car Dashboard", layout="wide")
+OPENAI_API_KEY = (
+    st.secrets.get("openai", {}).get("api_key")
+    or os.getenv("OPENAI_API_KEY", "")
+)
+VIN_API_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/"
 
-    NHTSA_DECODE_URL: str = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/"
-    NHTSA_FORMAT: str = "json"
-
-    OPENAI_MODEL: str = "gpt-4"
-
-    MAKES_MODELS: Dict[str, List[str]] = {
-        "Toyota": ["Camry", "Corolla", "RAV4", "Prius"],
-        "Ford": ["F-150", "Mustang", "Explorer", "Focus"],
-        "Honda": ["Civic", "Accord", "CR-V", "Fit"],
-        "Tesla": ["Model S", "Model 3", "Model X", "Model Y"],
-    }
-    LOCATIONS: List[str] = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix"]
-
+# TODO: Add GitHub Actions to lint/test/deploy
+# TODO: Move secrets into CI/CD-managed env
 
 # ------------------------------------------------------------
-# 2. SECRET MANAGEMENT
-# ------------------------------------------------------------
-def get_openai_api_key() -> str:
-    """
-    Fetch the OpenAI API key from Streamlit secrets or environment variables.
-    """
-    key = (
-        st.secrets.get("openai", {}).get("api_key", "")
-        or os.getenv("OPENAI_API_KEY", "")
-    )
-    if not key:
-        st.error("❌ OpenAI API key is missing. Please set it in Streamlit secrets or as an environment variable.")
-        st.stop()
-    return key
-
-
-# ------------------------------------------------------------
-# 3. LOGGING SETUP
+# 2. LOGGING
 # ------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -67,12 +31,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoIntelAI")
 
-
 # ------------------------------------------------------------
-# 4. DATA MODELS
+# 3. DATA MODELS
 # ------------------------------------------------------------
 class CarListing(BaseModel):
-    """Represents a car listing."""
     id: int
     make: str
     model: str
@@ -80,242 +42,317 @@ class CarListing(BaseModel):
     price: float
     mileage: int
     location: str
+    vin: Optional[str]
+    image_url: Optional[str]
     features: List[str] = Field(default_factory=list)
 
 
-# ------------------------------------------------------------
-# 5. LISTING GENERATOR
-# ------------------------------------------------------------
-class ListingGenerator:
-    """Generates mock car listings."""
+class VINDecodeResult(BaseModel):
+    VIN: str
+    Make: Optional[str]
+    Model: Optional[str]
+    ModelYear: Optional[str]
+    BodyClass: Optional[str]
+    Error: Optional[str]
 
-    def __init__(self, config: AppConfig):
-        self.config = config
 
-    @st.cache_data(ttl=600)
-    def generate_listing(self, index: int) -> CarListing:
-        """Generate a single random CarListing."""
-        make = random.choice(list(self.config.MAKES_MODELS.keys()))
-        model = random.choice(self.config.MAKES_MODELS[make])
-        year = random.randint(self.config.MIN_YEAR, self.config.MAX_YEAR)
-        price = round(random.uniform(self.config.MIN_PRICE, self.config.MAX_PRICE), 2)
-        mileage = random.randint(0, 200_000)
-        location = random.choice(self.config.LOCATIONS)
-        return CarListing(
-            id=index, make=make, model=model,
-            year=year, price=price,
-            mileage=mileage, location=location
+# ------------------------------------------------------------
+# 4. DATA UTILITIES
+# ------------------------------------------------------------
+@st.cache_data(ttl=600)
+def generate_listings(n: int = 5) -> List[CarListing]:
+    makes_models = {
+        "Toyota": ["Camry", "Corolla"],
+        "Honda": ["Civic", "Accord"],
+        "Ford": ["Mustang", "F-150"],
+        "BMW": ["3 Series", "X5"],
+    }
+    locations = ["New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX"]
+    listings: List[CarListing] = []
+    for i in range(1, n + 1):
+        make = random.choice(list(makes_models.keys()))
+        model = random.choice(makes_models[make])
+        year = random.randint(2012, 2024)
+        price = round(random.uniform(15000, 45000), 2)
+        mileage = random.randint(5000, 120000)
+        location = random.choice(locations)
+        vin = f"{random.randint(10**16, 10**17 - 1):017d}"
+        image_url = f"https://source.unsplash.com/featured/?{make},{model},car"
+        listings.append(
+            CarListing(
+                id=i,
+                make=make,
+                model=model,
+                year=year,
+                price=price,
+                mileage=mileage,
+                location=location,
+                vin=vin,
+                image_url=image_url,
+            )
+        )
+    logger.info("Generated %d listings", len(listings))
+    return listings
+
+
+@st.cache_data(ttl=3600)
+def decode_vin(vin: str) -> VINDecodeResult:
+    try:
+        resp = requests.get(f"{VIN_API_BASE}{vin}?format=json", timeout=10)
+        resp.raise_for_status()
+        data = resp.json().get("Results", [{}])[0]
+        result = VINDecodeResult(
+            VIN=vin,
+            Make=data.get("Make"),
+            Model=data.get("Model"),
+            ModelYear=data.get("ModelYear"),
+            BodyClass=data.get("BodyClass"),
+            Error=None,
+        )
+        logger.info("Decoded VIN %s: %s", vin, result)
+    except Exception as e:
+        logger.error("VIN decode error for %s: %s", vin, e)
+        result = VINDecodeResult(
+            VIN=vin,
+            Make=None,
+            Model=None,
+            ModelYear=None,
+            BodyClass=None,
+            Error=str(e),
+        )
+    return result
+
+
+# ------------------------------------------------------------
+# 5. AI UTILITIES (GPT-4)
+# ------------------------------------------------------------
+@st.cache_resource
+def get_openai_client() -> OpenAI:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI API key is missing.")
+    return OpenAI(api_key=OPENAI_API_KEY)
+
+
+def simple_keyword_response(text: str) -> Optional[str]:
+    t = text.lower()
+    if "price" in t:
+        return "Prices fluctuate—check the Listings tab for up-to-date figures."
+    if "mileage" in t:
+        return "Mileage impacts value. Lower mileage typically means higher price."
+    if any(g in t for g in ("hello", "hi")):
+        return "Hi there! How can I help you with car listings?"
+    return None
+
+
+def trim_history(history: List[Dict[str, str]], max_chars: int = 2000) -> List[Dict[str, str]]:
+    total = sum(len(m["content"]) for m in history)
+    while total > max_chars and len(history) > 2:
+        removed = history.pop(0)
+        total = sum(len(m["content"]) for m in history)
+        logger.debug("Trimmed message: %s", removed)
+    return history
+
+
+def ask_openai(history: List[Dict[str, str]]) -> str:
+    client = get_openai_client()
+    trimmed = trim_history(history)
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4",  # or "gpt-4-turbo"
+            messages=trimmed,
+            max_tokens=250,
+            temperature=0.5,
+        )
+        reply = resp.choices[0].message.content.strip()
+        logger.info("OpenAI reply: %s", reply)
+        return reply
+    except Exception as e:
+        logger.error("OpenAI error: %s", e)
+        return "Error: could not get response from AI."
+
+
+def get_ai_response(user_msg: str, history: List[Dict[str, str]]) -> str:
+    if kr := simple_keyword_response(user_msg):
+        history.append({"role": "assistant", "content": kr})
+        return kr
+    history.append({"role": "user", "content": user_msg})
+    reply = ask_openai(history)
+    history.append({"role": "assistant", "content": reply})
+    return reply
+
+
+# ------------------------------------------------------------
+# 6. UI HELPERS
+# ------------------------------------------------------------
+def display_metrics(listings: List[CarListing]):
+    if not listings:
+        st.warning("No listings available.")
+        return
+    avg = sum(l.price for l in listings) / len(listings)
+    hi = max(listings, key=lambda l: l.price)
+    lo = min(listings, key=lambda l: l.price)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Avg Price", f"${avg:,.0f}")
+    c2.metric("Highest", f"${hi.price:,.0f}", f"{hi.year} {hi.make}")
+    c3.metric("Lowest", f"${lo.price:,.0f}", f"{lo.year} {lo.make}")
+
+
+def display_listing(listing: CarListing):
+    cols = st.columns([2, 4, 1, 1, 2])
+    if listing.image_url:
+        cols[0].image(listing.image_url, use_column_width=True)
+    cols[1].markdown(f"**{listing.year} {listing.make} {listing.model}**")
+    cols[2].write(f"${listing.price:,.0f}")
+    cols[3].write(f"{listing.mileage:,} mi")
+    cols[4].write(listing.location)
+
+
+# ------------------------------------------------------------
+# 7. APP LAYOUT & LOGIC
+# ------------------------------------------------------------
+st.title("🕵️ AutoIntel.AI Car Intelligence Dashboard")
+tabs = st.tabs(
+    ["Track Listings", "AI Assistant", "VIN Decoder", "Deal Alerts", "Self-Enhancement"]
+)
+
+# --- Track Listings ---
+with tabs[0]:
+    st.header("Track Listings")
+    if "prev_listings" not in st.session_state:
+        st.session_state.prev_listings = []
+    if "current_listings" not in st.session_state:
+        st.session_state.current_listings = generate_listings(5)
+
+    if st.button("🔄 Refresh Listings"):
+        st.session_state.prev_listings = st.session_state.current_listings
+        st.session_state.current_listings = generate_listings(
+            len(st.session_state.current_listings)
         )
 
-    def generate_listings(self, count: int) -> List[CarListing]:
-        """Generate a list of random CarListings."""
-        if count < 1:
-            raise ValueError("Count must be a positive integer.")
-        return [self.generate_listing(i) for i in range(1, count + 1)]
+    prev_ids = {c.id for c in st.session_state.prev_listings}
+    curr_ids = {c.id for c in st.session_state.current_listings}
+    new = [c for c in st.session_state.current_listings if c.id not in prev_ids]
+    sold = [c for c in st.session_state.prev_listings if c.id not in curr_ids]
 
+    display_metrics(st.session_state.current_listings)
+    st.subheader("Current Listings")
+    for lst in st.session_state.current_listings:
+        display_listing(lst)
 
-# ------------------------------------------------------------
-# 6. VIN DECODER
-# ------------------------------------------------------------
-class VinDecoder:
-    """Decodes VIN numbers via the NHTSA API."""
+    if new:
+        st.subheader("🆕 New Since Last")
+        for lst in new:
+            display_listing(lst)
+    if sold:
+        st.subheader("✅ Removed/Sold")
+        for lst in sold:
+            display_listing(lst)
 
-    @staticmethod
-    @st.cache_data(ttl=3600)
-    def decode_vin(vin: str, year: Optional[int] = None) -> Dict[str, object]:
-        """Decode a VIN using NHTSA, with parameterized requests."""
-        vin = vin.strip() if isinstance(vin, str) else ""
-        if len(vin) != 17:
-            logger.error("VIN must be a 17-character string.")
-            raise ValueError("VIN must be 17 characters long.")
+# --- AI Assistant ---
+with tabs[1]:
+    st.header("AI Assistant")
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            {"role": "system", "content": "You are an expert car listings assistant."}
+        ]
+    user_q = st.text_input("Enter your question:")
+    if st.button("Ask AI") and user_q:
+        ans = get_ai_response(user_q, st.session_state.chat_history)
+        st.session_state.chat_history.append({"role": "assistant", "content": ans})
 
-        params = {"format": AppConfig.NHTSA_FORMAT}
-        if year:
-            params["modelyear"] = year
+    for msg in st.session_state.chat_history:
+        tag = "**You:**" if msg["role"] == "user" else "**AI:**"
+        st.markdown(f"{tag} {msg['content']}")
 
-        try:
-            resp = requests.get(
-                AppConfig.NHTSA_DECODE_URL + vin,
-                params=params,
-                timeout=10
-            )
-            resp.raise_for_status()
-        except requests.RequestException:
-            logger.exception("Failed to connect to NHTSA API.")
-            raise
+# --- VIN Decoder ---
+with tabs[2]:
+    st.header("VIN Decoder")
+    vin_in = st.text_input("Enter a 17-character VIN:")
+    if st.button("Decode VIN") and vin_in.strip():
+        res = decode_vin(vin_in.strip())
+        st.subheader("Decoded VIN Information")
+        for k, v in res.dict().items():
+            if v is not None:
+                st.write(f"**{k}:** {v}")
 
-        data = resp.json()
-        logger.info("VIN decoded successfully.")
-        return data
+# --- Deal Alerts ---
+with tabs[3]:
+    st.header("Deal Alerts")
+    sample = generate_listings(8)
+    opts = [f"{l.year} {l.make} {l.model} — ${l.price:,.0f}" for l in sample]
+    sel = st.selectbox("Choose a listing:", opts)
+    thresh = st.number_input("Your max price ($):", min_value=0.0, step=500.0)
+    if st.button("Check Deal"):
+        idx = opts.index(sel)
+        chosen = sample[idx]
+        if chosen.price <= thresh:
+            st.success(f"🎉 Deal! {chosen.year} {chosen.make} at ${chosen.price:,.0f}")
+        else:
+            st.info(f"❌ No deal: it's ${chosen.price:,.0f}")
 
+# --- Self-Enhancement ---
+with tabs[4]:
+    st.header("AI-Powered Code Review")
+    uploaded = st.file_uploader("Upload a Python file", type=["py"])
+    if uploaded:
+        code = uploaded.read().decode("utf-8")
+    else:
+        code = st.text_area("Or paste your Python code here", height=200)
 
-# ------------------------------------------------------------
-# 7. AI REVIEWER
-# ------------------------------------------------------------
-class AIReviewer:
-    """Uses OpenAI GPT-4 to review Python code."""
-
-    def __init__(self, model: str, api_key: str):
-        openai.api_key = api_key
-        self.model = model
-
-    def review_code(self, code: str) -> str:
-        """Send code to GPT-4 and return its review."""
-        if not code or not code.strip():
-            logger.error("No code provided for review.")
-            raise ValueError("Please provide code to review.")
-
-        logger.info("Sending code to GPT-4 for review.")
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "You are an expert Python code reviewer. "
-                        "Analyze the following code and provide:\n"
+    if st.button("Analyze Code"):
+        if not code.strip():
+            st.warning("Please upload or paste your code first.")
+        else:
+            try:
+                with st.spinner("Reviewing code with GPT-4..."):
+                    client = get_openai_client()
+                    prompt = (
+                        "You are an expert Python code reviewer. Analyze the following code and provide:\n"
                         "1. Maintainability score (1-10) and Performance score (1-10).\n"
-                        "2. Bullet-point suggestions for improvement.\n"
-                        "3. Specific comments on caching, modularization, type hints, error handling, logging, and testing.\n"
-                        "4. (Optional) Code snippets or diff-style fixes.\n\n"
+                        "2. A bullet-point list of code quality suggestions.\n"
+                        "3. Specific comments on caching, modularization, type hints, error handling, logging, and testing readiness.\n"
+                        "4. (Optional) Improved code snippets or diff-style recommendations.\n\n"
                         f"```python\n{code}\n```"
                     )
-                }]
-            )
-            review = response.choices[0].message.content.strip()
-            logger.info("Received review from GPT-4.")
-            return review
+                    resp = client.chat.completions.create(
+                        model="gpt-4",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant for code review."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.5,
+                    )
+                    review = resp.choices[0].message.content.strip()
 
-        except Exception:
-            logger.exception("OpenAI API call failed.")
-            raise RuntimeError("Error during code review. Please check your API key and network.")
-
-
-# ------------------------------------------------------------
-# 8. STREAMLIT UI & MAIN
-# ------------------------------------------------------------
-def main():
-    st.title("🕵️ AutoIntel.AI Car Intelligence Dashboard")
-
-    # Load configuration and secrets
-    config = AppConfig()
-    api_key = get_openai_api_key()
-
-    # Instantiate components
-    generator = ListingGenerator(config)
-    decoder = VinDecoder()
-    reviewer = AIReviewer(model=config.OPENAI_MODEL, api_key=api_key)
-
-    tabs = st.tabs([
-        "Track Listings",
-        "AI Assistant",
-        "VIN Decoder",
-        "Deal Alerts",
-        "Self-Enhancement"
-    ])
-
-    # --- Track Listings ---
-    with tabs[0]:
-        st.header("Track Listings")
-        count = st.number_input(
-            "Number of listings",
-            min_value=1,
-            max_value=50,
-            value=config.LISTINGS_DEFAULT_COUNT,
-            step=1
-        )
-        if st.button("Generate Listings"):
-            try:
-                listings = generator.generate_listings(count)
-                st.write(listings)
-            except ValueError as e:
-                st.error(str(e))
-
-    # --- AI Assistant (basic) ---
-    with tabs[1]:
-        st.header("AI Assistant")
-        query = st.text_input("Ask about listings:")
-        if st.button("Ask AI"):
-            try:
-                answer = reviewer.review_code(f"# Context question: {query}")
-                st.write(answer)
-            except Exception as e:
-                st.error(str(e))
-
-    # --- VIN Decoder ---
-    with tabs[2]:
-        st.header("VIN Decoder")
-        vin = st.text_input("Enter a 17-character VIN:")
-        year = st.number_input(
-            "Model Year (optional)",
-            min_value=config.MIN_YEAR,
-            max_value=config.MAX_YEAR,
-            value=0
-        ) or None
-        if st.button("Decode VIN"):
-            try:
-                result = decoder.decode_vin(vin, year)
-                st.json(result)
-            except Exception as e:
-                st.error(str(e))
-
-    # --- Deal Alerts ---
-    with tabs[3]:
-        st.header("Deal Alerts")
-        sample = generator.generate_listings(5)
-        opts = [
-            f"{c.year} {c.make} {c.model} — ${c.price:,.0f}"
-            for c in sample
-        ]
-        choice = st.selectbox("Select listing:", opts)
-        threshold = st.number_input("Max price ($):", min_value=0.0, step=500.0)
-        if st.button("Check Deal"):
-            sel = sample[opts.index(choice)]
-            if sel.price <= threshold:
-                st.success(f"Deal! {sel.make} at ${sel.price:,.0f}")
-            else:
-                st.info(f"No deal: ${sel.price:,.0f}")
-
-    # --- Self-Enhancement / Code Review ---
-    with tabs[4]:
-        st.header("AI-Powered Code Review")
-        uploaded = st.file_uploader("Upload a Python file", type=["py"])
-        code_text = (
-            uploaded.read().decode("utf-8")
-            if uploaded
-            else st.text_area("Or paste your Python code here", height=250)
-        )
-
-        if st.button("Analyze Code"):
-            try:
-                review = reviewer.review_code(code_text)
-                # Parse first line for scores
+                # Extract scores from first line if present
                 lines = review.splitlines()
-                body = review
+                review_body = review
                 if lines and "Maintainability" in lines[0] and "Performance" in lines[0]:
-                    parts = lines[0].split(",")
-                    m_score = parts[0].split(":")[1].strip()
-                    p_score = parts[1].split(":")[1].strip()
-                    c1, c2 = st.columns(2)
-                    c1.metric("Maintainability", m_score)
-                    c2.metric("Performance", p_score)
-                    body = "\n".join(lines[1:]).strip()
+                    try:
+                        parts = lines[0].split(",")
+                        m_score = parts[0].split(":")[1].strip()
+                        p_score = parts[1].split(":")[1].strip()
+                        st.subheader("Review Scores")
+                        c1, c2 = st.columns(2)
+                        c1.metric("Maintainability", m_score)
+                        c2.metric("Performance", p_score)
+                        review_body = "\n".join(lines[1:]).strip()
+                    except Exception:
+                        review_body = review
 
-                st.markdown(body)
+                st.subheader("Suggestions & Details")
+                st.markdown(review_body)
 
-                # Show diff or code blocks if present
-                if "```diff" in body:
-                    diff = body.split("```diff")[1].rsplit("```", 1)[0]
+                # Render any diff or code snippets
+                if "```diff" in review_body:
+                    diff = review_body.split("```diff", 1)[1].rsplit("```", 1)[0]
+                    st.subheader("Code Diff Suggestions")
                     st.code(diff, language="diff")
-                elif "```python" in body:
-                    snippets = body.split("```python")[1:]
-                    for idx, snip in enumerate(snippets, 1):
-                        snippet = snip.rsplit("```", 1)[0]
-                        st.code(snippet, language="python")
-
+                elif "```python" in review_body:
+                    snippets = review_body.split("```python")[1:]
+                    for i, snip in enumerate(snippets):
+                        code_snip = snip.rsplit("```", 1)[0]
+                        st.subheader(f"Code Snippet {i+1}")
+                        st.code(code_snip, language="python")
             except Exception as e:
-                st.error(str(e))
-
-
-if __name__ == "__main__":
-    main()
+                st.error(f"Error during code review: {e}")
