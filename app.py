@@ -3,7 +3,7 @@
 """
 AutoIntel.AI Car Intelligence Dashboard
 Refactored with improved decode_vin and review_code methods,
-secure API key handling, and corrected Streamlit inputs.
+secure API key handling, and correct Streamlit caching.
 """
 
 import os
@@ -92,9 +92,8 @@ class ListingGenerator:
     def __init__(self, config: AppConfig):
         self.config = config
 
-    @st.cache_data(ttl=600)
     def generate_listing(self, index: int) -> CarListing:
-        """Generate a single random CarListing."""
+        """Generate a single random CarListing (no caching here)."""
         make = random.choice(list(self.config.MAKES_MODELS.keys()))
         model = random.choice(self.config.MAKES_MODELS[make])
         year = random.randint(self.config.MIN_YEAR, self.config.MAX_YEAR)
@@ -102,13 +101,18 @@ class ListingGenerator:
         mileage = random.randint(0, 200_000)
         location = random.choice(self.config.LOCATIONS)
         return CarListing(
-            id=index, make=make, model=model,
-            year=year, price=price,
-            mileage=mileage, location=location
+            id=index,
+            make=make,
+            model=model,
+            year=year,
+            price=price,
+            mileage=mileage,
+            location=location
         )
 
+    @st.cache_data(ttl=600)
     def generate_listings(self, count: int) -> List[CarListing]:
-        """Generate a list of random CarListings."""
+        """Generate and cache a list of random CarListings."""
         if count < 1:
             raise ValueError("Count must be a positive integer.")
         return [self.generate_listing(i) for i in range(1, count + 1)]
@@ -320,4 +324,3 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
